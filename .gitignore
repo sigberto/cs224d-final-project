@@ -1,0 +1,6 @@
+.dropbox
+.idea/*
+.ipynb_checkpoints/*
+Icon*
+data/*
+download/*
