@@ -142,3 +142,4 @@ Number of params: 2164700 (retreival took 4.578165 secs)
 Created model with fresh parameters.
 Num params: 2325100
 Number of params: 2325100 (retreival took 5.450012 secs)
+Created model with fresh parameters.

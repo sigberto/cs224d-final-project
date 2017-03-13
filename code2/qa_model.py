@@ -28,23 +28,28 @@ def get_optimizer(opt):
 class Encoder(object):
     def __init__(self, size, vocab_dim):
         self.size = size #hidden size 
-        self.vocab_dim = vocab_dim #embedding size 
+        self.vocab_dim = vocab_dim #embedding size
+        self.num_perspectives = 50
         self.cell = tf.nn.rnn_cell.BasicLSTMCell(self.size)
+        self.agg_cell = tf.nn.rnn_cell.BasicLSTMCell(6*self.num_perspectives)
         self.attn_cell = None
 
 
-    def last_hidden_state(self, fw_o, bw_o, srclen):
+    def last_hidden_state(self, fw_o, bw_o, srclen, concat):
         # https://danijar.com/variable-sequence-lengths-in-tensorflow/
         idx = tf.range(tf.shape(fw_o)[0]) * tf.shape(fw_o)[1] + (srclen - 1)
         last_forward_state = tf.gather(tf.reshape(fw_o, [-1, self.size]), idx)
         if bw_o is not None:
-            last_hidden_state = tf.concat(1, [last_forward_state, bw_o[:, 0, :]])
+            last_backward_state = bw_o[:, 0, :]
+            if concat:
+                last_hidden_state = tf.concat(1, [last_forward_state, last_backward_state])
+            else:
+                last_hidden_state = (last_forward_state, last_backward_state)
         else:
             last_hidden_state = last_forward_state
         return last_hidden_state
 
-
-    def encode(self, inputs, masks, f_init_state = None, b_init_state = None, scope = "", reuse = False):
+    def encode(self, inputs, masks, concat, stage, f_init_state=None, b_init_state=None, scope="", reuse=False):
         """
         In a generalized encode function, you pass in your inputs,
         masks, and an initial
@@ -59,14 +64,64 @@ class Encoder(object):
                  It can be context-level representation, word-level representation,
                  or both.
         """
+        if stage == 'context_rep':
+            cell = self.cell
+        elif stage == 'aggregation':
+            cell = self.agg_cell
+        else:
+            raise ValueError('stage of processing is not one of ("context_rep", "aggregation")')
         with vs.variable_scope(scope, reuse=reuse):
             srclen = tf.reduce_sum(tf.cast(masks, tf.int32), axis = 1)
-            (fw_o, bw_o), (f_o_state, b_o_state) = tf.nn.bidirectional_dynamic_rnn(cell_fw=self.cell, cell_bw=self.cell, inputs=inputs,
+            (fw_o, bw_o), (f_o_state, b_o_state) = tf.nn.bidirectional_dynamic_rnn(cell_fw=cell, cell_bw=cell, inputs=inputs,
                                 sequence_length=srclen, initial_state_fw=f_init_state, initial_state_bw=b_init_state, dtype=tf.float64)
-            o = tf.concat(2, [fw_o, bw_o])
-            last_hidden_state = self.last_hidden_state(fw_o, bw_o, srclen)
+            if concat:
+                all_hidden_states = tf.concat(2, [fw_o, bw_o])
+            else:
+                all_hidden_states = (fw_o, bw_o)
 
-        return o, last_hidden_state, f_o_state, b_o_state
+            last_hidden_state = self.last_hidden_state(fw_o, bw_o, srclen, concat)
+
+        return all_hidden_states, last_hidden_state #, f_o_state, b_o_state
+
+    def f_m_vec_vec(self, vec1, vec2, scope):
+        with vs.variable_scope(scope):
+            W = tf.get_variable('W', shape=(self.size, self.num_perspectives), dtype=tf.float64, initializer=tf.contrib.layers.xavier_initializer())
+            Wv1 = tf.expand_dims(vec1, dim=2) * W
+            Wv2 = tf.expand_dims(vec2, dim=2) * W
+            norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=1)
+            norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=1)
+            m = tf.reduce_sum(tf.multiply(norm_Wv1, norm_Wv2), axis=1)
+            return m
+
+    def f_m_mat_mat_pool(self, mat1, mat2, op, scope):
+        # TODO incorporate paragraph_mask into result
+        with vs.variable_scope(scope):
+            W = tf.get_variable('W', shape=(self.size, self.num_perspectives), dtype=tf.float64, initializer=tf.contrib.layers.xavier_initializer())
+            Wv1 = tf.expand_dims(mat1, dim=3) * W
+            Wv2 = tf.expand_dims(mat2, dim=3) * W
+            norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=2)
+            norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=2)
+            outer_product = tf.reduce_sum(tf.expand_dims(norm_Wv1, dim=2) * (norm_Wv2), axis=3)
+            if op == 'max':
+                return tf.reduce_max(outer_product, axis=2)
+            elif op == 'mean':
+                return tf.reduce_mean(outer_product, axis=2)
+            else:
+                raise ValueError('op type is not one of ("max", "mean")')
+
+    def f_m_mat_vec(self, mat, vec, scope):
+        with vs.variable_scope(scope):
+            W = tf.get_variable('W', shape=(self.size, self.num_perspectives), dtype=tf.float64, initializer=tf.contrib.layers.xavier_initializer())
+            Wv1 = tf.expand_dims(mat, dim=3) * W
+            Wv2 = tf.expand_dims(vec, dim=2) * W
+            norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=2)
+            norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=1)
+
+            m = tf.reduce_sum(tf.multiply(norm_Wv1, norm_Wv2), axis=2)
+            return m
+
+    def aggregate(self, scope):
+        with vs.variable_scope(scope):
 
 
     def attn_mixer(self, reference_states, reference_masks, input_state):
@@ -193,8 +248,6 @@ class QASystem(object):
         self.encoder = encoder
         self.decoder = decoder
 
-
-
         # ==== assemble pieces ====
         with tf.variable_scope("qa", initializer=tf.uniform_unit_scaling_initializer(1.0)):
             self.setup_embeddings()
@@ -205,6 +258,24 @@ class QASystem(object):
         #params = tf.trainable_variables()
         self.updates = get_optimizer('adam')(self.FLAGS.learning_rate).minimize(self.loss)
 
+    def filter_layer(self):
+        norm_q = tf.nn.l2_normalize(self.question_var, dim=2)
+        norm_p = tf.nn.l2_normalize(self.paragraph_var, dim=2)
+        r_ij = tf.matmul(norm_q, norm_p, transpose_b=True)
+        r_j = tf.reduce_max(r_ij, axis=1)
+        p_prime = tf.multiply(tf.expand_dims(r_j, dim=2), self.paragraph_var)
+        self.paragraph_var = p_prime
+
+    def mpcm_layer(self, p_fw_all_h, p_bw_all_h, p_fw_last_h, p_bw_last_h, q_fw_all_h, q_bw_all_h, q_fw_last_h, q_bw_last_h):
+        m_full_fw = self.encoder.f_m_mat_vec(p_fw_all_h, q_fw_last_h, scope='W1')
+        m_full_bw = self.encoder.f_m_mat_vec(q_fw_all_h, p_fw_last_h, scope='W2')
+        m_max_fw = self.encoder.f_m_mat_mat_pool(p_fw_all_h, q_fw_all_h, 'max', scope='W3')
+        m_max_bw = self.encoder.f_m_mat_mat_pool(p_bw_all_h, q_bw_all_h, 'max', scope='W4')
+        m_mean_fw = self.encoder.f_m_mat_mat_pool(p_fw_all_h, q_fw_all_h, 'mean', scope='W5')
+        m_mean_bw = self.encoder.f_m_mat_mat_pool(p_bw_all_h, q_bw_all_h, 'mean', scope='W6')
+        m = tf.concat(2, [m_full_fw, m_full_bw, m_max_fw, m_max_bw, m_mean_fw, m_mean_bw])
+        return m
+
     def setup_system(self):
         """
         After your modularized implementation of encoder and decoder
@@ -212,11 +283,13 @@ class QASystem(object):
         to assemble your reading comprehension system!
         :return:
         """
-        o_q, h_q, f_o_h, b_o_h = self.encoder.encode(self.question_var, self.question_mask, scope='question')
-        #o_p, h_p = self.encoder.encode_w_attn(self.paragraph_var, self.paragraph_mask, o_q, self.question_mask, scope='conditioned_paragraph')
+        # TODO: cut paragraph and question lens to actual lens
+        self.filter_layer()
+        (p_fw_all_h, p_bw_all_h), (p_fw_last_h, p_bw_last_h) = self.encoder.encode(self.paragraph_var, self.paragraph_mask, stage='context_rep', concat=False, scope='paragraph')
+        (q_fw_all_h, q_bw_all_h), (q_fw_last_h, q_bw_last_h) = self.encoder.encode(self.question_var, self.question_mask, concat=False, scope='question')
+        m = self.mpcm_layer(p_fw_all_h, p_bw_all_h, p_fw_last_h, p_bw_last_h, q_fw_all_h, q_bw_all_h, q_fw_last_h, q_bw_last_h)
+        agg_all_h, agg_last_h = self.encoder.encode(m, self.paragraph_mask, stage='aggregation', concat=True, scope='aggregation')
 
-        o_p, h_p, _, _ = self.encoder.encode(self.paragraph_var, self.paragraph_mask, f_init_state=f_o_h, b_init_state=b_o_h, scope='paragraph')
-        atten_o_p = self.encoder.attn_mixer(o_p, self.paragraph_mask, h_q)
 
         self.a_s, self.a_e = self.decoder.decode(h_q, atten_o_p)
 
@@ -237,11 +310,14 @@ class QASystem(object):
         Loads distributed word representations based on placeholder tokens
         :return:
         """
+        q_mask = tf.cast(tf.expand_dims(self.question_mask, axis=2), tf.float64)
+        p_mask = tf.cast(tf.expand_dims(self.paragraph_mask, axis=2), tf.float64)
+
         with vs.variable_scope("embeddings"):
             glove_matrix = np.load(self.FLAGS.embed_path)['glove']
             embedding = tf.constant(glove_matrix)  # don't train the embeddings 
-            self.paragraph_var = tf.nn.embedding_lookup(embedding, self.paragraph)
-            self.question_var = tf.nn.embedding_lookup(embedding, self.question)
+            self.paragraph_var = tf.nn.embedding_lookup(embedding, self.paragraph) * p_mask
+            self.question_var = tf.nn.embedding_lookup(embedding, self.question) * q_mask
             # do we have to reshape?
             #self.question_var = tf.reshape(self.question_var, [-1, self.FLAGS.output_size, self.FLAGS.embedding_size])
 

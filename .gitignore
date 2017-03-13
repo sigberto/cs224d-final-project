@@ -4,3 +4,4 @@
 Icon*
 data/*
 download/*
+*.pyc
