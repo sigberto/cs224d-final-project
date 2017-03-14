@@ -160,3 +160,39 @@ Number of params: 2325100 (retreival took 2.279974 secs)
 Created model with fresh parameters.
 Num params: 2325100
 Number of params: 2325100 (retreival took 2.253105 secs)
+Created model with fresh parameters.
+Num params: 823300
+Number of params: 823300 (retreival took 2.598223 secs)
+Created model with fresh parameters.
+Num params: 823300
+Number of params: 823300 (retreival took 3.122617 secs)
+Created model with fresh parameters.
+Created model with fresh parameters.
+Num params: 823300
+Num params: 823300
+Number of params: 823300 (retreival took 2.816969 secs)
+Number of params: 823300 (retreival took 2.791485 secs)
+Created model with fresh parameters.
+Num params: 823300
+Number of params: 823300 (retreival took 2.686459 secs)
+Created model with fresh parameters.
+Num params: 823300
+Number of params: 823300 (retreival took 2.685413 secs)
+Created model with fresh parameters.
+Num params: 823300
+Number of params: 823300 (retreival took 2.762798 secs)
+Created model with fresh parameters.
+Num params: 823300
+Number of params: 823300 (retreival took 3.084962 secs)
+Created model with fresh parameters.
+Num params: 823300
+Number of params: 823300 (retreival took 2.563361 secs)
+Created model with fresh parameters.
+Num params: 823300
+Number of params: 823300 (retreival took 2.803783 secs)
+Created model with fresh parameters.
+Num params: 823300
+Number of params: 823300 (retreival took 2.627164 secs)
+Created model with fresh parameters.
+Num params: 823300
+Number of params: 823300 (retreival took 2.665832 secs)

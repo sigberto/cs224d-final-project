@@ -4,3 +4,5 @@
 Icon*
 data/*
 download/*
+*.DS_Store
+*.pyc
