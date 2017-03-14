@@ -26,10 +26,10 @@ def get_optimizer(opt):
     return optfn
 
 class Encoder(object):
-    def __init__(self, size, vocab_dim):
+    def __init__(self, size, vocab_dim, num_perspectives):
         self.size = size #hidden size 
         self.vocab_dim = vocab_dim #embedding size
-        self.num_perspectives = 50
+        self.num_perspectives = num_perspectives
         self.cell = tf.nn.rnn_cell.BasicLSTMCell(self.size)
         self.agg_cell = tf.nn.rnn_cell.BasicLSTMCell(6*self.num_perspectives)
         self.attn_cell = None
@@ -120,10 +120,6 @@ class Encoder(object):
             m = tf.reduce_sum(tf.multiply(norm_Wv1, norm_Wv2), axis=2)
             return m
 
-    def aggregate(self, scope):
-        with vs.variable_scope(scope):
-
-
     def attn_mixer(self, reference_states, reference_masks, input_state):
         ht = tf.nn.rnn_cell._linear(input_state, 2*self.size, True, 1.0)
         ht = tf.expand_dims(ht, axis=1)
@@ -200,10 +196,11 @@ class GRUAttnCell(tf.nn.rnn_cell.GRUCell):
 
 
 class Decoder(object):
-    def __init__(self, output_size):
-        self.output_size = output_size #output size 
+    def __init__(self, output_size, num_perspectives):
+        self.output_size = output_size #output size
+        self.num_perspectives = num_perspectives
 
-    def decode(self, h_q, h_p):
+    def decode(self, agg_all_h):
         """
         takes in a knowledge representation
         and output a probability estimation over
@@ -218,9 +215,23 @@ class Decoder(object):
 
         # h_q, h_p: both are 2-d TF variables 
         with vs.variable_scope("answer_start"):
-            a_s = tf.nn.rnn_cell._linear([h_q, h_p], output_size = self.output_size, bias=True)
+            W = tf.get_variable('W', shape=(12*self.num_perspectives, 1), dtype=tf.float64)
+            # b = tf.get_variable('b', shape=(self.output_size))
+            batch_size, _, _ = agg_all_h.get_shape()
+            agg_flat = tf.reshape(agg_all_h, [-1, 12*self.num_perspectives])
+            r = tf.matmul(agg_flat, W)
+            a_s = tf.reshape(r, tf.pack([batch_size, self.output_size, 12*self.num_perspectives]))
+
+            # a_s = tf.nn.rnn_cell._linear([agg_all_h], output_size = self.output_size, bias=True)
         with vs.variable_scope("answer_end"):
-            a_e = tf.nn.rnn_cell._linear([h_q, h_p], output_size = self.output_size, bias=True)
+            W = tf.get_variable('W', shape=(12 * self.num_perspectives, 1), dtype=tf.float64)
+            # b = tf.get_variable('b', shape=(self.output_size))
+            batch_size, _, _ = agg_all_h.get_shape()
+            agg_flat = tf.reshape(agg_all_h, [-1, 12 * self.num_perspectives])
+            r = tf.matmul(agg_flat, W)
+            a_e = tf.reshape(r, tf.pack([batch_size, self.output_size, 12 * self.num_perspectives]))
+
+            # a_e = tf.nn.rnn_cell._linear([agg_all_h], output_size = self.output_size, bias=True)
         return a_s, a_e
 
 
@@ -286,12 +297,12 @@ class QASystem(object):
         # TODO: cut paragraph and question lens to actual lens
         self.filter_layer()
         (p_fw_all_h, p_bw_all_h), (p_fw_last_h, p_bw_last_h) = self.encoder.encode(self.paragraph_var, self.paragraph_mask, stage='context_rep', concat=False, scope='paragraph')
-        (q_fw_all_h, q_bw_all_h), (q_fw_last_h, q_bw_last_h) = self.encoder.encode(self.question_var, self.question_mask, concat=False, scope='question')
+        (q_fw_all_h, q_bw_all_h), (q_fw_last_h, q_bw_last_h) = self.encoder.encode(self.question_var, self.question_mask, stage='context_rep', concat=False, scope='question')
         m = self.mpcm_layer(p_fw_all_h, p_bw_all_h, p_fw_last_h, p_bw_last_h, q_fw_all_h, q_bw_all_h, q_fw_last_h, q_bw_last_h)
         agg_all_h, agg_last_h = self.encoder.encode(m, self.paragraph_mask, stage='aggregation', concat=True, scope='aggregation')
 
 
-        self.a_s, self.a_e = self.decoder.decode(h_q, atten_o_p)
+        self.a_s, self.a_e = self.decoder.decode(agg_all_h)
 
     def setup_loss(self):
         """
