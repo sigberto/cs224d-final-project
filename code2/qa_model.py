@@ -326,7 +326,7 @@ class QASystem(object):
 
         output_feed = [self.loss]
 
-        loss = session.run(output_feed, input_feed)
+        [loss] = session.run(output_feed, input_feed)
 
         return loss
 
@@ -498,10 +498,10 @@ class QASystem(object):
                 updates, loss = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
                 print(loss)
 
-            saver.save(session, FLAGS.log_dir + '/model-weights', global_step=e)
+            saver.save(session, self.FLAGS.log_dir + '/model-weights', global_step=e)
 
             val_loss = self.validate(session)
-            print 'Validation Loss: %s' % val_loss
+            print(val_loss)
 
             self.evaluate_answer(session, q, p, sample = 100)
 
