@@ -247,6 +247,9 @@ class QASystem(object):
         grad_var = zip(grad, tf.trainable_variables())
         train_op = optimizer.apply_gradients(grad_var)
         self.updates = train_op
+        vars = [v for v in tf.trainable_variables()]
+        self.weight_norm = tf.global_norm(vars)
+        self.grad_norm = tf.global_norm(grad)
 
     def setup_system(self):
         """
@@ -312,7 +315,7 @@ class QASystem(object):
         input_feed[self.end_answer] = answer_end
 
         # grad_norm, param_norm
-        output_feed = [self.updates, self.loss]
+        output_feed = [self.updates, self.loss, self.weight_norm, self.grad_norm]
 
         outputs = session.run(output_feed, input_feed)
 
@@ -506,10 +509,11 @@ class QASystem(object):
                 q, q_mask = self.mask_and_pad(q, 'question')
                 p, p_mask = self.mask_and_pad(p, 'paragraph')
                 
-                updates, loss = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
-                logging.info('Epoch: {}. Batch: {}. Loss:{}'.format(e, batch_num, loss))
+                updates, loss, weight_norm, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
+                info_str = 'Epoch: {}. Batch: {}. Loss: {}. Weight norm: {}. Grad norm {}'.format(e, batch_num, loss, weight_norm, grad_norm)
+                logging.info(info_str)
+                print(info_str)
                 batch_num += 1
-                print(loss)
 
             saver.save(session, self.FLAGS.log_dir + '/model-weights', global_step=e)
 
