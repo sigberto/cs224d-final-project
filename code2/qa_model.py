@@ -197,6 +197,14 @@ class Decoder(object):
             a_e = tf.nn.rnn_cell._linear(last_knowledge_rep, output_size = self.output_size, bias=True)
         return a_s, a_e
 
+    def decode_gru(self, start_knowledge_rep, end_knowledge_rep):
+        with vs.variable_scope("answer_start"):
+            a_s = tf.nn.rnn_cell._linear(start_knowledge_rep, output_size = self.output_size, bias=True)
+        with vs.variable_scope("answer_end"):
+            a_e = tf.nn.rnn_cell._linear(end_knowledge_rep, output_size = self.output_size, bias=True)
+        return a_s, a_e
+
+
 
 class QASystem(object):
     def __init__(self, encoder, decoder, FLAGS):
@@ -253,10 +261,12 @@ class QASystem(object):
         p_states, p_last_state = self.encoder.encode_w_gru_attn(self.paragraph_var, self.paragraph_mask, encoder_outputs=q_states,
                                                                 encoder_masks=self.question_mask, scope='paragraph')
         # step 3
-        knowledge_rep, last_knowledge_rep = self.encoder.attn_mixer(p_states, self.paragraph_mask, q_last_state)
+        p_3_states, p_3_last_state = self.encoder.attn_mixer(p_states, self.paragraph_mask, q_last_state)
 
+        p_4_states, p_4_last_state = self.encoder.encode_gru(p_3_states, self.paragraph_mask, scope='p4')
+        _, p_5_last_state = self.encoder.encode_gru(p_4_states, self.paragraph_mask, scope='p5')
         # step 4
-        self.a_s, self.a_e = self.decoder.decode(last_knowledge_rep)
+        self.a_s, self.a_e = self.decoder.decode_gru(p_4_last_state, p_5_last_state)
 
     def setup_loss(self):
         """
