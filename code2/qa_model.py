@@ -25,6 +25,13 @@ def get_optimizer(opt):
         assert (False)
     return optfn
 
+def normalize_scores(scores, mask):
+    int_mask = tf.expand_dims(tf.cast(mask, tf.float64), dim=2)
+    scores = tf.exp(scores - tf.reduce_max(scores, reduction_indices=0, keep_dims=True))
+    scores = int_mask * scores
+    scores = scores / (1e-6 + tf.reduce_sum(scores, reduction_indices=0, keep_dims=True))
+    return scores
+
 class Encoder(object):
     def __init__(self, size, vocab_dim):
         self.size = size #hidden size 
@@ -79,13 +86,13 @@ class Encoder(object):
         ht = tf.nn.rnn_cell._linear(input_state, self.size, True, 1.0)
         ht = tf.expand_dims(ht, axis=1)
         scores = tf.reduce_sum(reference_states * ht, reduction_indices=2, keep_dims=True)
-
+        norm_scores = normalize_scores(scores, reference_masks)
         # alpha = tf.exp(scores)
         # int_mask = tf.expand_dims(tf.cast(reference_masks, tf.float64), dim=2)
         # scores = scores * int_mask
         # norm_scores = tf.nn.softmax(scores, dim=1)
         # norm_scores = norm_scores * int_mask
-        weighted_reference_states = reference_states * scores
+        weighted_reference_states = reference_states * norm_scores
         # alpha = tf.expand_dims(int_mask, dim=2) * alpha
         # sum_alpha = tf.reduce_sum(alpha, reduction_indices=1)
 
@@ -149,18 +156,18 @@ class GRUAttnCell(tf.nn.rnn_cell.GRUCell):
                 ht = tf.nn.rnn_cell._linear(gru_out, self._num_units, True, 1.0)
                 ht = tf.expand_dims(ht, axis = 1)
             scores = tf.reduce_sum(self.hs * ht, reduction_indices=2, keep_dims=True)
-
-            alpha = tf.exp(scores)
+            norm_scores = normalize_scores(scores, self.hs_masks)
+            # alpha = tf.exp(scores)
 
             # mask the exponents so that entries not in paragraph don't contribute to weights
-            int_mask = tf.cast(self.hs_masks, tf.float64)
-            alpha = tf.expand_dims(int_mask, dim=2) * alpha
+            # alpha = tf.expand_dims(int_mask, dim=2) * alpha
             # srclen = tf.reshape(srclen, [-1, tf.shape(self.hs_masks)[1], 1])
 
-            sum_alpha = tf.reduce_sum(alpha, reduction_indices=1)
-            context = tf.reduce_sum(self.hs * alpha, reduction_indices=1)
+            # sum_alpha = tf.reduce_sum(alpha, reduction_indices=1)
+            context = tf.reduce_sum(self.hs * norm_scores, reduction_indices=1)
+
             with vs.variable_scope("AttnConcat"):
-                out = tf.nn.relu(tf.nn.rnn_cell._linear([context/sum_alpha, gru_out], self._num_units, True, 1.0))
+                out = tf.nn.relu(tf.nn.rnn_cell._linear([context, gru_out], self._num_units, True, 1.0))
 
         return (out, out)
 
