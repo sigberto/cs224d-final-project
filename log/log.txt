@@ -205,3 +205,11 @@ Number of params: 823300 (retreival took 2.671313 secs)
 Created model with fresh parameters.
 Num params: 1304500
 Number of params: 1304500 (retreival took 4.916227 secs)
+Created model with fresh parameters.
+Num params: 1304500
+Number of params: 1304500 (retreival took 5.886387 secs)
+Created model with fresh parameters.
+Num params: 1304500
+Number of params: 1304500 (retreival took 5.605375 secs)
+Epoch: 0. Batch: 1. Loss:13.3477561184
+Epoch: 0. Batch: 2. Loss:13.4018855235

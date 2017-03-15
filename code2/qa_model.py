@@ -499,6 +499,7 @@ class QASystem(object):
         saver = tf.train.Saver()
 
         for e in range(self.FLAGS.epochs):
+            batch_num = 0
             for p, q, a in util.load_dataset("data/squad/train.ids.context", "data/squad/train.ids.question", "data/squad/train.span", self.FLAGS.batch_size, in_batches=True):
 
                 a_s, a_e = self.one_hot_func(a)
@@ -506,6 +507,8 @@ class QASystem(object):
                 p, p_mask = self.mask_and_pad(p, 'paragraph')
                 
                 updates, loss = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
+                logging.info('Epoch: {}. Batch: {}. Loss:{}'.format(e, batch_num, loss))
+                batch_num += 1
                 print(loss)
 
             saver.save(session, self.FLAGS.log_dir + '/model-weights', global_step=e)
