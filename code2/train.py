@@ -86,8 +86,8 @@ def main(_):
     vocab_path = FLAGS.vocab_path or pjoin(FLAGS.data_dir, "vocab.dat")
     vocab, rev_vocab = initialize_vocab(vocab_path)
 
-    encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size)
-    decoder = Decoder(output_size=FLAGS.output_size)
+    encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, num_perspectives=50)
+    decoder = Decoder(output_size=FLAGS.output_size, num_perspectives=50)
 
     qa = QASystem(encoder, decoder, FLAGS)
 
@@ -107,7 +107,7 @@ def main(_):
         save_train_dir = get_normalized_train_dir(FLAGS.train_dir)
         qa.train(sess, dataset, save_train_dir)
 
-        qa.evaluate_answer(sess, dataset, vocab, FLAGS.evaluate, log=True)
+        # qa.evaluate_answer(sess, dataset, vocab, FLAGS.evaluate, log=True)
 
 if __name__ == "__main__":
     tf.app.run()

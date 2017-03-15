@@ -33,24 +33,33 @@ def normalize_scores(scores, mask):
     return scores
 
 class Encoder(object):
-    def __init__(self, size, vocab_dim):
+    def __init__(self, size, vocab_dim, num_perspectives):
         self.size = size #hidden size 
         self.vocab_dim = vocab_dim #embedding size 
         self.cell = tf.nn.rnn_cell.GRUCell(self.size)
         self.attn_cell = None
 
+        # variables needed for the context + prediction steps
+        self.num_perspectives = num_perspectives
+        self.num_m = 8
+        self.total_m_size = self.num_perspectives * self.num_m
+        self.agg_cell = tf.nn.rnn_cell.BasicLSTMCell(self.total_m_size)
 
-    def last_hidden_state(self, fw_o, bw_o, srclen):
+    def last_hidden_state(self, fw_o, bw_o, srclen, concat, hidden_size):
         # https://danijar.com/variable-sequence-lengths-in-tensorflow/
         idx = tf.range(tf.shape(fw_o)[0]) * tf.shape(fw_o)[1] + (srclen - 1)
-        last_forward_state = tf.gather(tf.reshape(fw_o, [-1, self.size]), idx)
+        last_forward_state = tf.gather(tf.reshape(fw_o, [-1, hidden_size]), idx)
         if bw_o is not None:
-            last_hidden_state = tf.concat(1, [last_forward_state, bw_o[:, 0, :]])
+            last_backward_state = bw_o[:, 0, :]
+            if concat:
+                last_hidden_state = tf.concat(1, [last_forward_state, last_backward_state])
+            else:
+                last_hidden_state = (last_forward_state, last_backward_state)
         else:
             last_hidden_state = last_forward_state
         return last_hidden_state
 
-
+    '''
     def encode(self, inputs, masks, f_init_state = None, b_init_state = None, scope = "", reuse = False):
         """
         In a generalized encode function, you pass in your inputs,
@@ -74,40 +83,107 @@ class Encoder(object):
             last_hidden_state = self.last_hidden_state(fw_o, bw_o, srclen)
 
         return o, last_hidden_state, f_o_state, b_o_state
+    '''
+
+    def encode(self, inputs, masks, concat, stage, f_init_state=None, b_init_state=None, scope="", reuse=False):
+        """
+        In a generalized encode function, you pass in your inputs,
+        masks, and an initial
+        hidden state input into this function.
+        :param inputs: Symbolic representations of your input
+        :param masks: this is to make sure tf.nn.dynamic_rnn doesn't iterate
+                      through masked steps
+        :param encoder_state_input: (Optional) pass this as initial hidden state
+                                    to tf.nn.dynamic_rnn to build conditional representations
+        :return: an encoded representation of your input.
+                 It can be context-level representation, word-level representation,
+                 or both.
+        """
+        if stage == 'context_rep':
+            cell = self.cell
+            hidden_size = self.size
+        elif stage == 'aggregation':
+            cell = self.agg_cell
+            hidden_size = self.total_m_size
+        else:
+            raise ValueError('stage of processing is not one of ("context_rep", "aggregation")')
+        with vs.variable_scope(scope, reuse=reuse):
+            srclen = tf.reduce_sum(tf.cast(masks, tf.int32), axis=1)
+            (fw_o, bw_o), _ = tf.nn.bidirectional_dynamic_rnn(cell_fw=cell, cell_bw=cell,
+                                                                                   inputs=inputs,
+                                                                                   sequence_length=srclen,
+                                                                                   initial_state_fw=f_init_state,
+                                                                                   initial_state_bw=b_init_state,
+                                                                                   dtype=tf.float64)
+            if concat:
+                all_hidden_states = tf.concat(2, [fw_o, bw_o])
+            else:
+                all_hidden_states = (fw_o, bw_o)
+
+            last_hidden_state = self.last_hidden_state(fw_o, bw_o, srclen, concat, hidden_size)
+
+        return all_hidden_states, last_hidden_state
 
     def encode_gru(self, inputs, masks, init_state = None, scope = "", reuse = False):
         with vs.variable_scope(scope, reuse=reuse):
             srclen = tf.reduce_sum(tf.cast(masks, tf.int32), axis = 1)
             states, _ = tf.nn.dynamic_rnn(cell=self.cell, inputs=inputs, sequence_length=srclen, initial_state=init_state, dtype=tf.float64)
-            last_hidden_state = self.last_hidden_state(states, None, srclen)
+            last_hidden_state = self.last_hidden_state(states, None, srclen, self.size)
             return states, last_hidden_state
+
+    # vector, vector to get cosine scores
+    def f_m_vec_vec(self, vec1, vec2, scope):
+        with vs.variable_scope(scope):
+            W = tf.get_variable('W', shape=(self.size, self.num_perspectives), dtype=tf.float64,
+                                initializer=tf.contrib.layers.xavier_initializer())
+            Wv1 = tf.expand_dims(vec1, dim=2) * W
+            Wv2 = tf.expand_dims(vec2, dim=2) * W
+            norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=1)
+            norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=1)
+            m = tf.reduce_sum(tf.multiply(norm_Wv1, norm_Wv2), axis=1)
+            return m
+
+    # gets all cosine scores given a matrix and matrix
+    def f_m_mat_mat_pool(self, mat1, mat2, op, scope):
+        # TODO incorporate paragraph_mask into result
+        with vs.variable_scope(scope):
+            W = tf.get_variable('W', shape=(self.size, self.num_perspectives), dtype=tf.float64,
+                                initializer=tf.contrib.layers.xavier_initializer())
+            Wv1 = tf.expand_dims(mat1, dim=3) * W
+            Wv2 = tf.expand_dims(mat2, dim=3) * W
+            norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=2)
+            norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=2)
+            outer_product = tf.reduce_sum(tf.expand_dims(norm_Wv1, dim=2) * (norm_Wv2), axis=3)
+            if op == 'max':
+                return tf.reduce_max(outer_product, axis=2)
+            elif op == 'mean':
+                return tf.reduce_mean(outer_product, axis=2)
+            else:
+                raise ValueError('op type is not one of ("max", "mean")')
+
+    # given a matrix, gets all cosine scores
+    def f_m_mat_vec(self, mat, vec, scope):
+        with vs.variable_scope(scope):
+            W = tf.get_variable('W', shape=(self.size, self.num_perspectives), dtype=tf.float64,
+                                initializer=tf.contrib.layers.xavier_initializer())
+            Wv1 = tf.expand_dims(mat, dim=3) * W
+            Wv2 = tf.expand_dims(vec, dim=2) * W
+            norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=2)
+            norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=1)
+            m = tf.reduce_sum(tf.multiply(norm_Wv1, norm_Wv2), axis=2)
+            return m
 
     def attn_mixer(self, reference_states, reference_masks, input_state):
         ht = tf.nn.rnn_cell._linear(input_state, self.size, True, 1.0)
         ht = tf.expand_dims(ht, axis=1)
         scores = tf.reduce_sum(reference_states * ht, reduction_indices=2, keep_dims=True)
         norm_scores = normalize_scores(scores, reference_masks)
-        # alpha = tf.exp(scores)
-        # int_mask = tf.expand_dims(tf.cast(reference_masks, tf.float64), dim=2)
-        # scores = scores * int_mask
-        # norm_scores = tf.nn.softmax(scores, dim=1)
-        # norm_scores = norm_scores * int_mask
         weighted_reference_states = reference_states * norm_scores
-        # alpha = tf.expand_dims(int_mask, dim=2) * alpha
-        # sum_alpha = tf.reduce_sum(alpha, reduction_indices=1)
-
-        # alpha = tf.exp(scores)
-        # weighted_reference_states = tf.reduce_sum(reference_states * alpha, reduction_indices=1)
-        #
-        # int_mask = tf.cast(reference_masks, tf.float64)
-        # int_mask = tf.reshape(int_mask, [-1, tf.shape(reference_states)[1], 1])
-        # alpha = alpha * int_mask
-        # sum_alpha = tf.reduce_sum(alpha, reduction_indices=1)
-        # weighted_reference_states = weighted_reference_states/sum_alpha
 
         srclen = tf.reduce_sum(tf.cast(reference_masks, tf.int32), axis=1)
         return weighted_reference_states, self.last_hidden_state(weighted_reference_states, None, srclen)
 
+    '''
     def encode_w_attn(self, inputs, masks, encoder_outputs, encoder_masks, f_init_state = None, b_init_state = None, scope = "", reuse = False):
 
         fw_encoder_output = encoder_output[:, :, 0:self.size]
@@ -134,6 +210,7 @@ class Encoder(object):
             last_hidden_state = self.last_hidden_state(o, None, srclen)
 
         return o, last_hidden_state
+    '''
 
     def encode_w_gru_attn(self, inputs, masks, encoder_outputs, encoder_masks, init_state = None, scope = "", reuse = False):
         self.attn_cell = GRUAttnCell(self.size, encoder_outputs, encoder_masks)
@@ -142,6 +219,42 @@ class Encoder(object):
             states, _ = tf.nn.dynamic_rnn(cell=self.attn_cell, inputs=inputs, sequence_length=srclen, initial_state=init_state, dtype=tf.float64)
             last_hidden_state = self.last_hidden_state(states, None, srclen)
         return states, last_hidden_state
+
+    def attentive_matching(self, mat1, mat2, op, scope):
+        with vs.variable_scope(scope):
+            norm_mat1 = tf.nn.l2_normalize(mat1, dim=2)
+            norm_mat2 = tf.nn.l2_normalize(mat2, dim=2)
+            alpha = tf.reduce_sum(tf.expand_dims(norm_mat1, dim=2) * norm_mat2, axis=3) # (?, 750, 60)
+            if op == 'mean':
+                sum_alpha = 1e-6 + tf.reduce_sum(alpha, axis=2, keep_dims=True)
+                weighted_mat2 = mat2 * tf.expand_dims(alpha, dim=3)
+                mean_mat2 = tf.reduce_sum(weighted_mat2, axis=2)
+                input_mat_2 = mean_mat2 / sum_alpha
+            elif op == 'max':
+                max_alpha_inds = tf.argmax(alpha, axis=2)
+
+                # a = tf.cast(tf.range(0, tf.shape(mat1)[0]), dtype=tf.int64)
+                # cat_idx = tf.concat(0, [a, max_alpha_inds])
+
+                # max_mat1 = tf.gather_nd(mat2, max_alpha_inds)
+                max_mat2 = tf.gather(mat2, max_alpha_inds)
+                a=0
+
+            else:
+                raise ValueError('op was not one of ("mean", "max")')
+            m_att = self.f_m_mat_mat_one_to_one(mat1, input_mat_2, scope)
+            return m_att
+
+    def f_m_mat_mat_one_to_one(self, mat1, mat2, scope):
+        with vs.variable_scope(scope):
+            W = tf.get_variable('W', shape=(self.size, self.num_perspectives), dtype=tf.float64,
+                                initializer=tf.contrib.layers.xavier_initializer())
+            Wv1 = tf.expand_dims(mat1, dim=3) * W
+            Wv2 = tf.expand_dims(mat2, dim=3) * W
+            norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=2)
+            norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=2)
+            cos_sim = tf.reduce_sum(norm_Wv1 * norm_Wv2, axis=2)
+            return cos_sim
 
 class GRUAttnCell(tf.nn.rnn_cell.GRUCell):
     def __init__(self, num_units, encoder_outputs, encoder_masks, scope=None):
@@ -174,10 +287,12 @@ class GRUAttnCell(tf.nn.rnn_cell.GRUCell):
 
 
 class Decoder(object):
-    def __init__(self, output_size):
-        self.output_size = output_size #output size 
+    def __init__(self, output_size, num_perspectives):
+        self.output_size = output_size #output size
+        self.intermediate_size_factor = 10
+        self.num_perspectives = num_perspectives
 
-    def decode(self, last_knowledge_rep):
+    def decode(self, knowledge_rep):
         """
         takes in a knowledge representation
         and output a probability estimation over
@@ -192,9 +307,13 @@ class Decoder(object):
 
         # h_q, h_p: both are 2-d TF variables 
         with vs.variable_scope("answer_start"):
-            a_s = tf.nn.rnn_cell._linear(last_knowledge_rep, output_size = self.output_size, bias=True)
+            intermediate_a_s = tf.nn.rnn_cell._linear(knowledge_rep, output_size = self.intermediate_size_factor * self.output_size, bias=True, scope='intermediate')
+            intermediate_relu =tf.nn.relu(intermediate_a_s)
+            a_s = tf.nn.rnn_cell._linear(intermediate_relu, output_size = self.output_size, bias=True, scope='final')
         with vs.variable_scope("answer_end"):
-            a_e = tf.nn.rnn_cell._linear(last_knowledge_rep, output_size = self.output_size, bias=True)
+            intermediate_a_e = tf.nn.rnn_cell._linear(knowledge_rep, output_size = self.intermediate_size_factor * self.output_size, bias=True, scope='intermediate')
+            intermediate_relu = tf.nn.relu(intermediate_a_e)
+            a_e = tf.nn.rnn_cell._linear(intermediate_relu, output_size = self.output_size, bias=True, scope='final')
         return a_s, a_e
 
 
@@ -238,7 +357,34 @@ class QASystem(object):
         grad, _ = tf.clip_by_global_norm(grad, self.FLAGS.max_gradient_norm)
         grad_var = zip(grad, tf.trainable_variables())
         train_op = optimizer.apply_gradients(grad_var)
+        self.norm_grad = tf.global_norm(grad)
         self.updates = train_op
+
+    def filter_layer(self):
+        norm_q = tf.nn.l2_normalize(self.question_var, dim=2)
+        norm_p = tf.nn.l2_normalize(self.paragraph_var, dim=2)
+        r_ij = tf.matmul(norm_q, norm_p, transpose_b=True)
+        r_j = tf.reduce_max(r_ij, axis=1)
+        p_prime = tf.multiply(tf.expand_dims(r_j, dim=2), self.paragraph_var)
+        self.paragraph_var = p_prime
+
+    def bmpm_layer(self, from_fw_all_h, from_bw_all_h, p_fw_last_h, p_bw_last_h, to_fw_all_h, to_bw_all_h, to_fw_last_h,
+                   to_bw_last_h, scope):
+        with vs.variable_scope(scope):
+            m_full_fw = self.encoder.f_m_mat_vec(from_fw_all_h, to_fw_last_h, scope='W1')
+            m_full_bw = self.encoder.f_m_mat_vec(from_bw_all_h, to_bw_last_h, scope='W2')
+            m_max_fw = self.encoder.f_m_mat_mat_pool(from_fw_all_h, to_fw_all_h, 'max', scope='W3')
+            m_max_bw = self.encoder.f_m_mat_mat_pool(from_bw_all_h, to_bw_all_h, 'max', scope='W4')
+            m_attentive_matching_mean_fw = self.encoder.attentive_matching(from_fw_all_h, to_fw_all_h, 'mean', scope='W5')
+            m_attentive_matching_mean_bw = self.encoder.attentive_matching(from_bw_all_h, to_bw_all_h, 'mean', scope='W6')
+            # m_attentive_matching_max_fw = self.encoder.attentive_matching(from_fw_all_h, to_fw_all_h, 'max', scope='W7')
+            # m_attentive_matching_max_bw = self.encoder.attentive_matching(from_bw_all_h, to_bw_all_h, 'max', scope='W8')
+
+            m = tf.concat(2, [m_full_fw, m_full_bw, m_max_fw, m_max_bw, m_attentive_matching_mean_fw,
+                              m_attentive_matching_mean_bw, m_attentive_matching_mean_fw, m_attentive_matching_mean_bw])
+        return m
+
+
 
     def setup_system(self):
         """
@@ -247,6 +393,8 @@ class QASystem(object):
         to assemble your reading comprehension system!
         :return:
         """
+        '''
+        ###### BASELINE ######
         # step 1
         q_states, q_last_state = self.encoder.encode_gru(self.question_var, self.question_mask, scope='question')
         # step 2
@@ -257,6 +405,25 @@ class QASystem(object):
 
         # step 4
         self.a_s, self.a_e = self.decoder.decode(last_knowledge_rep)
+        '''
+
+        ###### Bilateral ######
+        # TODO: cut paragraph and question lens to actual lens
+
+        (p_fw_all_h, p_bw_all_h), (p_fw_last_h, p_bw_last_h) = self.encoder.encode(self.paragraph_var, self.paragraph_mask, stage='context_rep', concat=False, scope='paragraph')
+        (q_fw_all_h, q_bw_all_h), (q_fw_last_h, q_bw_last_h) = self.encoder.encode(self.question_var, self.question_mask, stage='context_rep', concat=False, scope='question')
+        m_p = self.bmpm_layer(p_fw_all_h, p_bw_all_h, p_fw_last_h, p_bw_last_h, q_fw_all_h, q_bw_all_h, q_fw_last_h, q_bw_last_h, scope ='p_bmpm')
+        m_q = self.bmpm_layer(q_fw_all_h, q_bw_all_h, q_fw_last_h, q_bw_last_h, p_fw_all_h, p_bw_all_h, p_fw_last_h, p_bw_last_h, scope ='q_bmpm')
+        (_, _), (p_agg_fw_last_h, p_agg_bw_last_h) = self.encoder.encode(m_p,
+                                                                       self.paragraph_mask,
+                                                                       stage='aggregation', concat=False,
+                                                                       scope='p_aggregation')
+        (_, _), (q_agg_fw_last_h, q_agg_bw_last_h) = self.encoder.encode(m_q,
+                                                                       self.question_mask,
+                                                                       stage='aggregation', concat=False,
+                                                                       scope='q_aggregation')
+        knowledge_rep = tf.concat(1, [p_agg_fw_last_h, p_agg_bw_last_h, q_agg_fw_last_h, q_agg_bw_last_h])
+        self.a_s, self.a_e = self.decoder.decode(knowledge_rep)
 
     def setup_loss(self):
         """
@@ -302,7 +469,7 @@ class QASystem(object):
         input_feed[self.end_answer] = answer_end
 
         # grad_norm, param_norm
-        output_feed = [self.updates, self.loss]
+        output_feed = [self.updates, self.loss, self.norm_grad]
 
         outputs = session.run(output_feed, input_feed)
 
@@ -473,6 +640,7 @@ class QASystem(object):
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
 
+        count = 0
         for e in range(self.FLAGS.epochs):
             for p, q, a in util.load_dataset("data/squad/train.ids.context", "data/squad/train.ids.question", "data/squad/train.span", self.FLAGS.batch_size, in_batches=True):
 
@@ -480,8 +648,10 @@ class QASystem(object):
                 q, q_mask = self.mask_and_pad(q, 'question')
                 p, p_mask = self.mask_and_pad(p, 'paragraph')
                 
-                updates, loss = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
-                print(loss)
+                updates, loss, norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
+
+                count += 1
+                print(str(count) + ": Loss is " + str(loss)  + " ----- Norm is " + str(norm))
             # save the model
             saver = tf.Saver()
 
