@@ -512,7 +512,6 @@ class QASystem(object):
                 updates, loss, weight_norm, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
                 info_str = 'Epoch: {}. Batch: {}. Loss: {}. Weight norm: {}. Grad norm {}'.format(e, batch_num, loss, weight_norm, grad_norm)
                 logging.info(info_str)
-                print(info_str)
                 batch_num += 1
 
             saver.save(session, self.FLAGS.log_dir + '/model-weights', global_step=e)
