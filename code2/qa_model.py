@@ -170,7 +170,8 @@ class Encoder(object):
             Wv2 = tf.expand_dims(vec, dim=2) * W
             norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=2)
             norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=1)
-            m = tf.reduce_sum(tf.multiply(norm_Wv1, norm_Wv2), axis=2)
+            product = tf.multiply(norm_Wv1, norm_Wv2)
+            m = tf.reduce_sum(product, axis=2)
             return m
 
     def attn_mixer(self, reference_states, reference_masks, input_state):
@@ -316,6 +317,14 @@ class Decoder(object):
             a_e = tf.nn.rnn_cell._linear(intermediate_relu, output_size = self.output_size, bias=True, scope='final')
         return a_s, a_e
 
+    def decode_gru(self, start_knowledge_rep, end_knowledge_rep):
+        with vs.variable_scope("answer_start"):
+            a_s = tf.nn.rnn_cell._linear(start_knowledge_rep, output_size = self.output_size, bias=True)
+        with vs.variable_scope("answer_end"):
+            a_e = tf.nn.rnn_cell._linear(end_knowledge_rep, output_size = self.output_size, bias=True)
+        return a_s, a_e
+
+
 
 class QASystem(object):
     def __init__(self, encoder, decoder, FLAGS):
@@ -359,6 +368,9 @@ class QASystem(object):
         train_op = optimizer.apply_gradients(grad_var)
         self.norm_grad = tf.global_norm(grad)
         self.updates = train_op
+        vars = [v for v in tf.trainable_variables()]
+        self.weight_norm = tf.global_norm(vars)
+        self.grad_norm = tf.global_norm(grad)
 
     def filter_layer(self):
         norm_q = tf.nn.l2_normalize(self.question_var, dim=2)
@@ -401,8 +413,10 @@ class QASystem(object):
         p_states, p_last_state = self.encoder.encode_w_gru_attn(self.paragraph_var, self.paragraph_mask, encoder_outputs=q_states,
                                                                 encoder_masks=self.question_mask, scope='paragraph')
         # step 3
-        knowledge_rep, last_knowledge_rep = self.encoder.attn_mixer(p_states, self.paragraph_mask, q_last_state)
+        p_3_states, p_3_last_state = self.encoder.attn_mixer(p_states, self.paragraph_mask, q_last_state)
 
+        p_4_states, p_4_last_state = self.encoder.encode_gru(p_3_states, self.paragraph_mask, scope='p4')
+        _, p_5_last_state = self.encoder.encode_gru(p_4_states, self.paragraph_mask, scope='p5')
         # step 4
         self.a_s, self.a_e = self.decoder.decode(last_knowledge_rep)
         '''
@@ -469,28 +483,33 @@ class QASystem(object):
         input_feed[self.end_answer] = answer_end
 
         # grad_norm, param_norm
-        output_feed = [self.updates, self.loss, self.norm_grad]
+        output_feed = [self.updates, self.loss, self.weight_norm, self.grad_norm]
 
         outputs = session.run(output_feed, input_feed)
 
         return outputs
 
-    def test(self, session, valid_x, valid_y):
+    def test(self, session, paragraph, paragraph_mask, question, question_mask, answer_start, answer_end):
         """
         in here you should compute a cost for your validation set
         and tune your hyperparameters according to the validation set performance
         :return:
         """
-        input_feed = {}
 
-        # fill in this feed_dictionary like:
-        # input_feed['valid_x'] = valid_x
+        # A create_dict_dict helper may be a good idea ...
+        input_feed = {}
+        input_feed[self.paragraph] = paragraph
+        input_feed[self.question] = question
+        input_feed[self.paragraph_mask] = paragraph_mask
+        input_feed[self.question_mask] = question_mask
+        input_feed[self.start_answer] = answer_start
+        input_feed[self.end_answer] = answer_end
 
         output_feed = [self.loss]
 
-        outputs = session.run(output_feed, input_feed)
+        [loss] = session.run(output_feed, input_feed)
 
-        return outputs
+        return loss
 
     def decode(self, session, test_paragraph, test_question):
         """
@@ -521,7 +540,7 @@ class QASystem(object):
 
         return (a_s, a_e)
 
-    def validate(self, sess, valid_dataset):
+    def validate(self, session):
         """
         Iterate through the validation dataset and determine what
         the validation cost is.
@@ -533,11 +552,20 @@ class QASystem(object):
 
         :return:
         """
+        validate_prefix = self.FLAGS.data_dir + '/val.'
+        context_file = validate_prefix + 'ids.context'
+        question_file = validate_prefix + 'ids.question'
+        answer_file = validate_prefix + 'span'
+
         valid_cost = 0
 
-        for valid_x, valid_y in valid_dataset:
-          valid_cost = self.test(sess, valid_x, valid_y)
+        for p, q, a in util.load_dataset(context_file, question_file, answer_file, self.FLAGS.batch_size, in_batches=True):
 
+            a_s, a_e = self.one_hot_func(a)
+            q, q_mask = self.mask_and_pad(q, 'question')
+            p, p_mask = self.mask_and_pad(p, 'paragraph')
+                
+            valid_cost += self.test(session, p, p_mask, q, q_mask, a_s, a_e)
 
         return valid_cost
 
@@ -639,25 +667,24 @@ class QASystem(object):
         num_params = sum(map(lambda t: np.prod(tf.shape(t.value()).eval()), params))
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
+        saver = tf.train.Saver()
 
-        count = 0
         for e in range(self.FLAGS.epochs):
+            batch_num = 0
             for p, q, a in util.load_dataset("data/squad/train.ids.context", "data/squad/train.ids.question", "data/squad/train.span", self.FLAGS.batch_size, in_batches=True):
 
                 a_s, a_e = self.one_hot_func(a)
                 q, q_mask = self.mask_and_pad(q, 'question')
                 p, p_mask = self.mask_and_pad(p, 'paragraph')
-                
-                updates, loss, norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
+                updates, loss, weight_norm, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
+                info_str = 'Epoch: {}. Batch: {}. Loss: {}. Weight norm: {}. Grad norm {}'.format(e, batch_num, loss, weight_norm, grad_norm)
+                logging.info(info_str)
+                batch_num += 1
 
-                count += 1
-                print(str(count) + ": Loss is " + str(loss)  + " ----- Norm is " + str(norm))
-            # save the model
-            saver = tf.Saver()
+            saver.save(session, self.FLAGS.log_dir + '/model-weights', global_step=e)
 
+            val_loss = self.validate(session)
+            print(val_loss)
 
-            val_loss = self.validate(p_val, q_val, a_val)
-
-            self.evaluate_answer(session, p_val, q_val)
             self.evaluate_answer(session, q, p, sample = 100)
 
