@@ -87,32 +87,16 @@ class Encoder(object):
             return states, last_hidden_state
 
 
-    def attn_mixer(self, reference_states, reference_masks, input_state, scope):
-        with vs.variable_scope(scope):
-                ht = tf.nn.rnn_cell._linear(input_state, self.size, True, 1.0)
-                ht = tf.expand_dims(ht, axis=1)
-                scores = tf.reduce_sum(reference_states * ht, reduction_indices=2, keep_dims=True)
-                norm_scores = normalize_scores(scores, reference_masks)
-                # alpha = tf.exp(scores)
-                # int_mask = tf.expand_dims(tf.cast(reference_masks, tf.float64), dim=2)
-                # scores = scores * int_mask
-                # norm_scores = tf.nn.softmax(scores, dim=1)
-                # norm_scores = norm_scores * int_mask
-                weighted_reference_states = reference_states * norm_scores
-                # alpha = tf.expand_dims(int_mask, dim=2) * alpha
-                # sum_alpha = tf.reduce_sum(alpha, reduction_indices=1)
+    def attn_mixer(self, reference_states, reference_masks, input_state, scope="", reuse=False):
+        with vs.variable_scope(scope, reuse=reuse):
+            ht = tf.nn.rnn_cell._linear(input_state, self.size, True, 1.0)
+            ht = tf.expand_dims(ht, axis=1)
+            scores = tf.reduce_sum(reference_states * ht, reduction_indices=2, keep_dims=True)
+            norm_scores = normalize_scores(scores, reference_masks)
+            weighted_reference_states = reference_states * norm_scores
 
-                # alpha = tf.exp(scores)
-                # weighted_reference_states = tf.reduce_sum(reference_states * alpha, reduction_indices=1)
-                #
-                # int_mask = tf.cast(reference_masks, tf.float64)
-                # int_mask = tf.reshape(int_mask, [-1, tf.shape(reference_states)[1], 1])
-                # alpha = alpha * int_mask
-                # sum_alpha = tf.reduce_sum(alpha, reduction_indices=1)
-                # weighted_reference_states = weighted_reference_states/sum_alpha
-
-                srclen = tf.reduce_sum(tf.cast(reference_masks, tf.int32), axis=1)
-                return weighted_reference_states, self.last_hidden_state(weighted_reference_states, None, srclen)
+            srclen = tf.reduce_sum(tf.cast(reference_masks, tf.int32), axis=1)
+            return weighted_reference_states, self.last_hidden_state(weighted_reference_states, None, srclen)
 
 
 
@@ -159,7 +143,7 @@ class Decoder(object):
     def __init__(self, output_size):
         self.output_size = output_size  # output size
 
-    def decode(self, last_knowledge_rep, q_last_state):
+    def decode(self, last_knowledge_rep):
         """
         takes in a knowledge representation
         and output a probability estimation over
@@ -173,9 +157,9 @@ class Decoder(object):
 
         # h_q, h_p: both are 2-d TF variables
         with vs.variable_scope("answer_start"):
-            a_s = tf.nn.rnn_cell._linear([last_knowledge_rep, q_last_state], output_size=self.output_size, bias=True)
+            a_s = tf.nn.rnn_cell._linear(last_knowledge_rep, output_size=self.output_size, bias=True)
         with vs.variable_scope("answer_end"):
-            a_e = tf.nn.rnn_cell._linear([last_knowledge_rep, q_last_state], output_size=self.output_size, bias=True)
+            a_e = tf.nn.rnn_cell._linear(last_knowledge_rep, output_size=self.output_size, bias=True)
         return a_s, a_e
 
     def decode_gru(self, start_knowledge_rep, end_knowledge_rep):
@@ -233,13 +217,14 @@ class QASystem(object):
         to assemble your reading comprehension system!
         :return:
         """
+        """
         # step 1
         q_states, q_last_state = self.encoder.encode_gru(self.question_var, self.question_mask, scope='question')
         # step 2
         p_states, p_last_state = self.encoder.encode_w_gru_attn(self.paragraph_var, self.paragraph_mask, encoder_outputs=q_states,
-                                                                encoder_masks=self.question_mask, scope='paragraph_w_attn')
+                                                                encoder_masks=self.question_mask, scope='paragraph')
         q_2_states, q_last_state = self.encoder.encode_w_gru_attn(q_states, self.question_mask, encoder_outputs=p_states,
-                                                                encoder_masks=self.paragraph_mask, scope='question_w_attn')
+                                                                encoder_masks=self.paragraph_mask, scope='q_attn')
         # step 3
         p_3_states, _ = self.encoder.attn_mixer(p_states, self.paragraph_mask, q_last_state, scope='attn_to_q')
         q_3_states, _ = self.encoder.attn_mixer(q_2_states, self.question_mask, p_last_state, scope='attn_to_p')
@@ -248,7 +233,37 @@ class QASystem(object):
         p_4_states, p_4_last_state = self.encoder.encode_gru(p_3_states, self.paragraph_mask, scope='p4')
         q_4_states, q_4_last_state = self.encoder.encode_gru(q_3_states, self.question_mask, scope='q4')
 
+        # _, p_5_last_state = self.encoder.encode_gru(p_4_states, self.paragraph_mask, scope='p5')
+        # step 4
         self.a_s, self.a_e = self.decoder.decode_gru(p_4_last_state, q_4_last_state)
+        """
+
+        # step 1
+        q_states, q_last_state = self.encoder.encode_gru(self.question_var, self.question_mask, scope='question')
+        # step 2
+        p_attn_states, p_attn_last_state = self.encoder.encode_w_gru_attn(self.paragraph_var, self.paragraph_mask,
+                                                                encoder_outputs=q_states,
+                                                                encoder_masks=self.question_mask, scope='paragraph_attn')
+
+        q_attn_states, q_attn_last_state = self.encoder.encode_w_gru_attn(q_states, self.question_mask,
+                                                                          encoder_outputs=p_attn_states,
+                                                                          encoder_masks=self.paragraph_mask,
+                                                                          scope='question_attn')
+        # step 3
+        p_3_states, p_3_last_state = self.encoder.attn_mixer(p_attn_states, self.paragraph_mask, q_last_state, scope='paragraph_mix')
+        p_3_sum_state = tf.reduce_sum(p_3_states, reduction_indices = 1)
+
+        q_3_states, q_3_last_state = self.encoder.attn_mixer(q_attn_states, self.question_mask, p_attn_last_state, scope='question_mix')
+        q_3_sum_state = tf.reduce_sum(q_3_states, reduction_indices = 1)
+
+        p_4_states, p_4_last_state = self.encoder.encode_gru(p_3_states, self.paragraph_mask, scope='p4')
+        q_4_states, q_4_last_state = self.encoder.encode_gru(q_3_states, self.question_mask, scope='q4')
+
+        #p_4_concat_state = tf.concat(1, [p_3_sum_state, q_3_sum_state])
+        p_4_concat_state = tf.concat(1, [p_4_last_state, q_4_last_state])
+
+        # step 4
+        self.a_s, self.a_e = self.decoder.decode(p_4_concat_state)
 
     def setup_loss(self):
         """
@@ -467,7 +482,7 @@ class QASystem(object):
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
         saver = tf.train.Saver()
-
+        
         for e in range(self.FLAGS.epochs):
             batch_num = 0
             for p, q, a in util.load_dataset("data/squad/train.ids.context", "data/squad/train.ids.question",
@@ -487,3 +502,17 @@ class QASystem(object):
             print(val_loss)
 
             self.evaluate_answer(session, q, p, sample=100)
+
+        '''
+        for e in range(80):
+
+            p, q, a = util.load_single_dataset("data/squad/train.ids.context", "data/squad/train.ids.question",
+                                             "data/squad/train.span", self.FLAGS.batch_size)
+            a_s, a_e = self.one_hot_func(a)
+            q, q_mask = self.mask_and_pad(q, 'question')
+            p, p_mask = self.mask_and_pad(p, 'paragraph')
+
+            updates, loss, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
+            logging.info('Epoch: {}. Loss:{}'.format(e, loss))
+            print("Loss: " + str(loss) + " ------ Gradient Norm: " + str(grad_norm))
+        '''
