@@ -28,9 +28,9 @@ def get_optimizer(opt):
 
 def normalize_scores(scores, mask):
     int_mask = tf.expand_dims(tf.cast(mask, tf.float64), dim=2)
-    scores = tf.exp(scores - tf.reduce_max(scores, reduction_indices=0, keep_dims=True))
+    scores = tf.exp(scores - tf.reduce_max(scores, reduction_indices=1, keep_dims=True))
     scores = int_mask * scores
-    scores = scores / (1e-6 + tf.reduce_sum(scores, reduction_indices=0, keep_dims=True))
+    scores = scores / (1e-6 + tf.reduce_sum(scores, reduction_indices=1, keep_dims=True))
     return scores
 
 
