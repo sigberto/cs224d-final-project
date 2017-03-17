@@ -1,4 +1,4 @@
-def load_dataset(f1, f2, f3, batch_size, in_batches):
+def load_dataset(f1, f2, f3, batch_size, max_paragraph_len, in_batches):
     fd1, fd2, fd3 = open(f1), open(f2), open(f3)
     batch1 = []
     batch2 = []
@@ -7,7 +7,11 @@ def load_dataset(f1, f2, f3, batch_size, in_batches):
     fd1.seek(0)
     for i in xrange(num_lines-1):
         line1, line2, line3 = fd1.readline(), fd2.readline(), fd3.readline()
-        batch1.append([int(x) for x in line1.split()])
+        context = [int(x) for x in line1.split()]
+        if len(context) > max_paragraph_len:
+            continue
+        batch1.append(context)
+
         batch2.append([int(x) for x in line2.split()])
         batch3.append([int(x) for x in line3.split()])
 

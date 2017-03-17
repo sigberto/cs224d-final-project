@@ -9,6 +9,7 @@ import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
+from tensorflow.python.ops.gen_math_ops import _batch_mat_mul as batch_matmul
 
 from evaluate import exact_match_score, f1_score
 import util
@@ -167,6 +168,7 @@ class Encoder(object):
             norm_Wv1_t = tf.transpose(norm_Wv1, [0,3,1,2]) #(?, num_perspectives, num_mat1_states, hidden_size)
             norm_Wv2_t = tf.transpose(norm_Wv2, [0,3,2,1]) #(?, num_perspectives, hidden_size, num_mat2_states)
             compared_states = tf.matmul(norm_Wv1_t, norm_Wv2_t) #(?, num_perspectives, num_mat1_states, num_mat2_states)
+
             if op == 'max':
                 result = tf.reduce_max(compared_states, axis=3)
             elif op == 'mean':
@@ -204,6 +206,7 @@ class Encoder(object):
             # norm_mat2 = tf.nn.l2_normalize(mat2, dim=2)
             if op == 'mean':
                 weighted_mat2 = tf.matmul(alpha, mat2)
+                p = batch_matmul(alpha, mat2)
                 sum_alpha = 1e-6 + tf.reduce_sum(alpha, axis=2, keep_dims=True)
                 input_mat_2 = weighted_mat2 / sum_alpha
             elif op == 'max':
@@ -222,15 +225,14 @@ class Encoder(object):
             return m_att
 
     def f_m_mat_mat_one_to_one(self, mat1, mat2, scope):
-        with vs.variable_scope(scope):
-            W = tf.get_variable('W', shape=(self.size, self.num_perspectives), dtype=tf.float64,
-                                initializer=tf.contrib.layers.xavier_initializer())
-            Wv1 = tf.expand_dims(mat1, dim=3) * W
-            Wv2 = tf.expand_dims(mat2, dim=3) * W
-            norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=2)
-            norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=2)
-            cos_sim = tf.reduce_sum(norm_Wv1 * norm_Wv2, axis=2)
-            return cos_sim
+        W = tf.get_variable('W', shape=(self.size, self.num_perspectives), dtype=tf.float64,
+                            initializer=tf.contrib.layers.xavier_initializer())
+        Wv1 = tf.expand_dims(mat1, dim=3) * W
+        Wv2 = tf.expand_dims(mat2, dim=3) * W
+        norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=2)
+        norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=2)
+        cos_sim = tf.reduce_sum(norm_Wv1 * norm_Wv2, axis=2)
+        return cos_sim
 
 
 class GRUAttnCell(tf.nn.rnn_cell.GRUCell):
@@ -308,11 +310,13 @@ class QASystem(object):
         self.question = tf.placeholder(tf.int32, [None, self.FLAGS.max_question_size])
         self.paragraph = tf.placeholder(tf.int32, [None, self.FLAGS.max_paragraph_size])
 
-        self.start_answer = tf.placeholder(tf.int32, [None, self.FLAGS.output_size])
-        self.end_answer = tf.placeholder(tf.int32, [None, self.FLAGS.output_size])
+        # self.start_answer = tf.placeholder(tf.int32, [None, self.FLAGS.output_size])
+        self.start_answer = tf.placeholder(tf.int32, [None,])
+        # self.end_answer = tf.placeholder(tf.int32, [None, self.FLAGS.output_size])
+        self.end_answer = tf.placeholder(tf.int32, [None,])
 
         self.question_mask = tf.placeholder(tf.bool, [None, self.FLAGS.max_question_size])
-        self.paragraph_mask = tf.placeholder(tf.bool, [None, self.FLAGS.max_paragraph_size])
+        self.paragraph_mask = tf.placeholder(tf.bool, [None,self.FLAGS.max_paragraph_size])
 
         self.encoder = encoder
         self.decoder = decoder
@@ -320,8 +324,8 @@ class QASystem(object):
         # ==== assemble pieces ====
         with tf.variable_scope("qa", initializer=tf.uniform_unit_scaling_initializer(1.0)):
             self.setup_embeddings()
-            # self.setup_system_baseline()
-            self.setup_system_bmpm()
+            self.setup_system_baseline()
+            # self.setup_system_bmpm()
             self.setup_loss()
 
         # ==== set up training/updating procedure ====
@@ -435,8 +439,8 @@ class QASystem(object):
         :return:
         """
         with vs.variable_scope("loss"):
-            l1 = tf.nn.softmax_cross_entropy_with_logits(self.a_s, self.start_answer)
-            l2 = tf.nn.softmax_cross_entropy_with_logits(self.a_e, self.end_answer)
+            l1 = tf.nn.sparse_softmax_cross_entropy_with_logits(self.a_s, self.start_answer)
+            l2 = tf.nn.sparse_softmax_cross_entropy_with_logits(self.a_e, self.end_answer)
             self.loss = tf.reduce_mean(l1 + l2)
 
     def setup_embeddings(self):
@@ -546,7 +550,7 @@ class QASystem(object):
 
         for p, q, a in util.load_dataset(context_file, question_file, answer_file, self.FLAGS.batch_size,
                                          in_batches=True):
-            a_s, a_e = self.one_hot_func(a)
+            a_s, a_e = zip(*a) # self.one_hot_func(a)
             q, q_mask = self.mask_and_pad(q, 'question')
             p, p_mask = self.mask_and_pad(p, 'paragraph')
 
@@ -650,8 +654,9 @@ class QASystem(object):
         for e in range(self.FLAGS.epochs):
             batch_num = 0
             for p, q, a in util.load_dataset("data/squad/train.ids.context", "data/squad/train.ids.question",
-                                             "data/squad/train.span", self.FLAGS.batch_size, in_batches=True):
-                a_s, a_e = self.one_hot_func(a)
+                                             "data/squad/train.span", self.FLAGS.batch_size,
+                                             self.FLAGS.max_paragraph_size, in_batches=True):
+                a_s, a_e = zip(*a) # self.one_hot_func(a)
                 q, q_mask = self.mask_and_pad(q, 'question')
                 p, p_mask = self.mask_and_pad(p, 'paragraph')
 
@@ -672,7 +677,7 @@ class QASystem(object):
 
             p, q, a = util.load_single_dataset("data/squad/train.ids.context", "data/squad/train.ids.question",
                                              "data/squad/train.span", self.FLAGS.batch_size)
-            a_s, a_e = self.one_hot_func(a)
+            a_s, a_e = zip(*a) # self.one_hot_func(a)
             q, q_mask = self.mask_and_pad(q, 'question')
             p, p_mask = self.mask_and_pad(p, 'paragraph')
 
