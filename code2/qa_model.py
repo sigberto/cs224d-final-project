@@ -335,19 +335,17 @@ class QASystem(object):
 
         return loss
 
-    def decode(self, session, test_paragraph, test_question):
+    def decode(self, session, paragraph, p_mask, question, q_mask):
         """
         Returns the probability distribution over different positions in the paragraph
         so that other methods like self.answer() will be able to work properly
         :return:
         """
         input_feed = {}
-
-        # fill in this feed_dictionary like:
-        # input_feed['test_x'] = test_x
-
-        input_feed[self.paragraph] = test_paragraph
-        input_feed[self.question] = test_question
+        input_feed[self.paragraph] = paragraph
+        input_feed[self.question] = question
+        input_feed[self.paragraph_mask] = p_mask
+        input_feed[self.question_mask] = q_mask
 
         output_feed = [self.a_s, self.a_e]
 
@@ -355,9 +353,9 @@ class QASystem(object):
 
         return outputs
 
-    def answer(self, session, test_x):
+    def answer(self, session, paragraph, p_mask, question, q_mask):
 
-        yp, yp2 = self.decode(session, test_x)
+        yp, yp2 = self.decode(session, paragraph, p_mask, question, q_mask)
 
         a_s = np.argmax(yp, axis=1)
         a_e = np.argmax(yp2, axis=1)
@@ -390,7 +388,7 @@ class QASystem(object):
 
         return valid_cost
 
-    def evaluate_answer(self, session, paragraph, question, sample=100, log=False):
+    def evaluate_answer(self, session, sample=100, log=False):
         """
         Evaluate the model's performance using the harmonic mean of F1 and Exact Match (EM)
         with the set of true answer labels
@@ -406,17 +404,28 @@ class QASystem(object):
         from evaluate import f1_score, exact_match_score
         # use these functions to determine how the model is actually doing
 
-        f1 = 0.
-        em = 0.
+        f1_raw = 0.
+        em_raw = 0.
 
-        for p, q in zip(paragraph, question):
-            a_s, a_e = self.answer(session, p, q)
-            answer = p[a_s: a_e + 1]
-            f1_score(prediction, ground_truth)
+        output = util.load_dataset("data/squad/train.ids.context", "data/squad/train.ids.question", "data/squad/train.span", sample, in_batches=True)
+        p, q, answers = output.next()
+        answer_starts, answer_ends = self.one_hot_func(answers)
+        questions, question_masks = self.mask_and_pad(q, 'question')
+        paragraphs, paragraph_masks = self.mask_and_pad(p, 'paragraph')
+        pred_a_s, pred_a_e = self.answer(session, paragraphs, paragraph_masks, questions, question_masks)
+
+        for question, q_mask, paragraph, p_mask, answer, a_s, a_e in zip(questions, question_masks, paragraphs, paragraph_masks, answers, pred_a_s, pred_a_e):
+            ground_truth = ','.join([str(i) for i in paragraph[answer[0] : answer[1] + 1]])
+            prediction = ','.join([str(i) for i in paragraph[a_s : a_e + 1]])
+            f1_raw += f1_score(prediction, ground_truth)
+            em_raw += exact_match_score(prediction, ground_truth)
+
+        f1 = f1_raw / float(sample)
+        em = em_raw / float(sample)
 
         if log:
             logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))
-
+        
         return f1, em
 
     def one_hot_func(self, answers):
@@ -501,7 +510,8 @@ class QASystem(object):
             val_loss = self.validate(session)
             print(val_loss)
 
-            self.evaluate_answer(session, q, p, sample=100)
+            f1, em = self.evaluate_answer(session, sample=100, log=True)
+            if log: logging.info('F1: {}. EM: {}. Loss:{}'.format(f1, em))
 
         '''
         for e in range(80):
