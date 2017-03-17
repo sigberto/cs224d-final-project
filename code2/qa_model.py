@@ -170,16 +170,18 @@ class Encoder(object):
             Wv2 = tf.expand_dims(mat2, dim=3) * W # mat2 (10, 60, 200, 50)
             norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=2)
             norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=2)
-            norm_Wv1_t = tf.transpose(norm_Wv1, [0,3,1,2]) #(?, num_perspectives, num_mat1_states, hidden_size)
-            norm_Wv2_t = tf.transpose(norm_Wv2, [0,3,2,1]) #(?, num_perspectives, hidden_size, num_mat2_states)
-            compared_states = tf.matmul(norm_Wv1_t, norm_Wv2_t) #(?, num_perspectives, num_mat1_states, num_mat2_states)
+            # norm_Wv1_t = tf.transpose(norm_Wv1, [0,3,1,2]) #(?, num_perspectives, num_mat1_states, hidden_size)
+            # norm_Wv2_t = tf.transpose(norm_Wv2, [0,3,2,1]) #(?, num_perspectives, hidden_size, num_mat2_states)
+            # compared_states = tf.matmul(norm_Wv1_t, norm_Wv2_t) #(?, num_perspectives, num_mat1_states, num_mat2_states)
+            compared_states = tf.expand_dims(norm_Wv1, dim=2) * tf.expand_dims(norm_Wv2, dim=1) #(?, num_perspectives, num_mat1_states, num_mat2_states)
+            compared_states = tf.reduce_sum(compared_states, axis=2)
             if op == 'max':
-                result = tf.reduce_max(compared_states, axis=3)
+                m = tf.reduce_max(compared_states, axis=2)
             elif op == 'mean':
-                result = tf.reduce_mean(compared_states, axis=3)
+                m = tf.reduce_mean(compared_states, axis=2)
             else:
                 raise ValueError('op type is not one of ("max", "mean")')
-            m = tf.transpose(result, [0, 2, 1])
+            # m = tf.transpose(result, [0, 2, 1])
             return m
 
     # given a matrix, gets all cosine scores
@@ -191,17 +193,19 @@ class Encoder(object):
             Wv2 = tf.expand_dims(vec, dim=2) * W
             norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=2)
             norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=1)
-            num_states = mat.get_shape()[1]
-            tile_tensor = tf.constant([1, int(num_states), 1, 1], dtype=tf.int32)
-            tiled_norm_Wv2 = tf.tile(tf.expand_dims(norm_Wv2, dim=1), tile_tensor)
-            product = norm_Wv1 * tiled_norm_Wv2
+            product = norm_Wv1 * tf.expand_dims(norm_Wv2, dim=1)
+            # num_states = mat.get_shape()[1]
+            # tile_tensor = tf.constant([1, int(num_states), 1, 1], dtype=tf.int32)
+            # tiled_norm_Wv2 = tf.tile(tf.expand_dims(norm_Wv2, dim=1), tile_tensor)
+            # product = norm_Wv1 * tiled_norm_Wv2
             m = tf.reduce_sum(product, axis=2)
             return m
 
     def compare_states(self, states1, states2):
         norm_states1 = tf.nn.l2_normalize(states1, dim=2)
         norm_states2 = tf.nn.l2_normalize(states2, dim=2)
-        alpha = tf.matmul(norm_states1, norm_states2, transpose_b=True)  # (?, num_perspectives, num_mat1_states, num_mat2_states)
+        product = tf.expand_dims(norm_states1, dim=2)*tf.expand_dims(norm_states2, dim=1)
+        alpha = tf.reduce_sum(product, axis=3)  # (?, num_perspectives, num_mat1_states, num_mat2_states)
         return alpha
 
     def attentive_matching(self, mat1, mat2, alpha, op, scope):
@@ -209,7 +213,8 @@ class Encoder(object):
             # norm_mat1 = tf.nn.l2_normalize(mat1, dim=2)
             # norm_mat2 = tf.nn.l2_normalize(mat2, dim=2)
             if op == 'mean':
-                weighted_mat2 = batch_matmul(alpha, mat2)
+                weighted_mat2 = tf.expand_dims(alpha, dim=3) * tf.expand_dims(mat2, dim=1)
+                weighted_mat2 = tf.reduce_sum(weighted_mat2, axis=2)
                 sum_alpha = 1e-6 + tf.reduce_sum(alpha, axis=2, keep_dims=True)
                 input_mat_2 = weighted_mat2 / sum_alpha
             elif op == 'max':
@@ -329,8 +334,8 @@ class QASystem(object):
         # ==== assemble pieces ====
         with tf.variable_scope("qa", initializer=tf.uniform_unit_scaling_initializer(1.0)):
             self.setup_embeddings()
-            self.setup_system_baseline()
-            # self.setup_system_bmpm()
+            # self.setup_system_baseline()
+            self.setup_system_bmpm()
             self.setup_loss()
 
         # ==== set up training/updating procedure ====
@@ -414,7 +419,7 @@ class QASystem(object):
             # m_attentive_matching_max_bw = self.encoder.attentive_matching(from_bw_all_h, to_bw_all_h, 'max', scope='W8')
 
             m = tf.concat(2, [m_full_fw, m_full_bw, m_max_fw, m_max_bw, m_attentive_matching_mean_fw,
-                              m_attentive_matching_mean_bw, m_attentive_matching_mean_fw, m_attentive_matching_mean_bw])
+                              m_attentive_matching_mean_bw])
         return m
 
     def setup_system_bmpm(self):
