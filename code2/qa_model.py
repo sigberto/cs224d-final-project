@@ -166,8 +166,8 @@ class Encoder(object):
         with vs.variable_scope(scope):
             W = tf.get_variable('W', shape=(self.size, self.num_perspectives), dtype=tf.float64,
                                 initializer=tf.contrib.layers.xavier_initializer())
-            Wv1 = tf.expand_dims(mat1, dim=3) * W
-            Wv2 = tf.expand_dims(mat2, dim=3) * W
+            Wv1 = tf.expand_dims(mat1, dim=3) * W # mat1 (10, 750, 200, 50)
+            Wv2 = tf.expand_dims(mat2, dim=3) * W # mat2 (10, 60, 200, 50)
             norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=2)
             norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=2)
             norm_Wv1_t = tf.transpose(norm_Wv1, [0,3,1,2]) #(?, num_perspectives, num_mat1_states, hidden_size)
@@ -593,8 +593,8 @@ class QASystem(object):
         pred_a_s, pred_a_e = self.answer(session, paragraphs, paragraph_masks, questions, question_masks)
 
         for question, q_mask, paragraph, p_mask, answer, a_s, a_e in zip(questions, question_masks, paragraphs, paragraph_masks, answers, pred_a_s, pred_a_e):
-            ground_truth = ','.join([str(i) for i in paragraph[answer[0] : answer[1] + 1]])
-            prediction = ','.join([str(i) for i in paragraph[a_s : a_e + 1]])
+            ground_truth = ' '.join([str(i) for i in paragraph[answer[0] : answer[1] + 1]])
+            prediction = ' '.join([str(i) for i in paragraph[a_s : a_e + 1]])
             f1_raw += f1_score(prediction, ground_truth)
             em_raw += exact_match_score(prediction, ground_truth)
 
