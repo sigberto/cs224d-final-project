@@ -168,7 +168,6 @@ class Encoder(object):
             norm_Wv1_t = tf.transpose(norm_Wv1, [0,3,1,2]) #(?, num_perspectives, num_mat1_states, hidden_size)
             norm_Wv2_t = tf.transpose(norm_Wv2, [0,3,2,1]) #(?, num_perspectives, hidden_size, num_mat2_states)
             compared_states = tf.matmul(norm_Wv1_t, norm_Wv2_t) #(?, num_perspectives, num_mat1_states, num_mat2_states)
-
             if op == 'max':
                 result = tf.reduce_max(compared_states, axis=3)
             elif op == 'mean':
@@ -205,8 +204,7 @@ class Encoder(object):
             # norm_mat1 = tf.nn.l2_normalize(mat1, dim=2)
             # norm_mat2 = tf.nn.l2_normalize(mat2, dim=2)
             if op == 'mean':
-                weighted_mat2 = tf.matmul(alpha, mat2)
-                p = batch_matmul(alpha, mat2)
+                weighted_mat2 = batch_matmul(alpha, mat2)
                 sum_alpha = 1e-6 + tf.reduce_sum(alpha, axis=2, keep_dims=True)
                 input_mat_2 = weighted_mat2 / sum_alpha
             elif op == 'max':
@@ -324,8 +322,8 @@ class QASystem(object):
         # ==== assemble pieces ====
         with tf.variable_scope("qa", initializer=tf.uniform_unit_scaling_initializer(1.0)):
             self.setup_embeddings()
-            self.setup_system_baseline()
-            # self.setup_system_bmpm()
+            # self.setup_system_baseline()
+            self.setup_system_bmpm()
             self.setup_loss()
 
         # ==== set up training/updating procedure ====
