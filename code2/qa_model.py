@@ -39,14 +39,19 @@ class Encoder(object):
     def __init__(self, size, vocab_dim, num_perspectives):
         self.size = size  # hidden size
         self.vocab_dim = vocab_dim  # embedding size
-        self.cell = tf.nn.rnn_cell.BasicLSTMCell(self.size)
+        self.dropout = 0.15
+        self.cell = tf.nn.rnn_cell.DropoutWrapper(
+            tf.nn.rnn_cell.BasicLSTMCell(self.size),
+            output_keep_prob=self.dropout)
         self.attn_cell = None
 
         # variables needed for the context + prediction steps
         self.num_perspectives = num_perspectives
         self.num_m = 8
         self.total_m_size = self.num_perspectives * self.num_m
-        self.agg_cell = tf.nn.rnn_cell.BasicLSTMCell(self.total_m_size)
+        self.agg_cell = tf.nn.rnn_cell.DropoutWrapper(
+            tf.nn.rnn_cell.BasicLSTMCell(self.total_m_size),
+            output_keep_prob=self.dropout)
 
     def last_hidden_state(self, fw_o, bw_o, srclen, concat, hidden_size):
         # https://danijar.com/variable-sequence-lengths-in-tensorflow/
@@ -316,14 +321,16 @@ class QASystem(object):
         self.question_mask = tf.placeholder(tf.bool, [None, self.FLAGS.max_question_size])
         self.paragraph_mask = tf.placeholder(tf.bool, [None,self.FLAGS.max_paragraph_size])
 
+        # self.dropout = tf.placeholder(tf.float64, ())
+
         self.encoder = encoder
         self.decoder = decoder
 
         # ==== assemble pieces ====
         with tf.variable_scope("qa", initializer=tf.uniform_unit_scaling_initializer(1.0)):
             self.setup_embeddings()
-            # self.setup_system_baseline()
-            self.setup_system_bmpm()
+            self.setup_system_baseline()
+            # self.setup_system_bmpm()
             self.setup_loss()
 
         # ==== set up training/updating procedure ====
@@ -471,6 +478,7 @@ class QASystem(object):
         input_feed[self.question_mask] = question_mask
         input_feed[self.start_answer] = answer_start
         input_feed[self.end_answer] = answer_end
+        # input_feed[self.dropout] = dropout
 
         # grad_norm, param_norm
         output_feed = [self.updates, self.loss, self.grad_norm]
