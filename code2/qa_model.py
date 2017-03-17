@@ -164,13 +164,17 @@ class Encoder(object):
             Wv2 = tf.expand_dims(mat2, dim=3) * W
             norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=2)
             norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=2)
-            outer_product = tf.reduce_sum(tf.expand_dims(norm_Wv1, dim=2) * (norm_Wv2), axis=3)
+            norm_Wv1_t = tf.transpose(norm_Wv1, [0,3,1,2]) #(?, num_perspectives, num_mat1_states, hidden_size)
+            norm_Wv2_t = tf.transpose(norm_Wv2, [0,3,2,1]) #(?, num_perspectives, hidden_size, num_mat2_states)
+            compared_states = tf.matmul(norm_Wv1_t, norm_Wv2_t) #(?, num_perspectives, num_mat1_states, num_mat2_states)
             if op == 'max':
-                return tf.reduce_max(outer_product, axis=2)
+                result = tf.reduce_max(compared_states, axis=3)
             elif op == 'mean':
-                return tf.reduce_mean(outer_product, axis=2)
+                result = tf.reduce_mean(compared_states, axis=3)
             else:
                 raise ValueError('op type is not one of ("max", "mean")')
+            m = tf.transpose(result, [0, 2, 1])
+            return m
 
     # given a matrix, gets all cosine scores
     def f_m_mat_vec(self, mat, vec, scope):
@@ -181,21 +185,27 @@ class Encoder(object):
             Wv2 = tf.expand_dims(vec, dim=2) * W
             norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=2)
             norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=1)
-            product = tf.multiply(norm_Wv1, norm_Wv2)
+            num_states = mat.get_shape()[1]
+            tile_tensor = tf.constant([1, int(num_states), 1, 1], dtype=tf.int32)
+            tiled_norm_Wv2 = tf.tile(tf.expand_dims(norm_Wv2, dim=1), tile_tensor)
+            product = norm_Wv1 * tiled_norm_Wv2
             m = tf.reduce_sum(product, axis=2)
             return m
 
+    def compare_states(self, states1, states2):
+        norm_states1 = tf.nn.l2_normalize(states1, dim=2)
+        norm_states2 = tf.nn.l2_normalize(states2, dim=2)
+        alpha = tf.matmul(norm_states1, norm_states2, transpose_b=True)  # (?, num_perspectives, num_mat1_states, num_mat2_states)
+        return alpha
 
-    def attentive_matching(self, mat1, mat2, op, scope):
+    def attentive_matching(self, mat1, mat2, alpha, op, scope):
         with vs.variable_scope(scope):
-            norm_mat1 = tf.nn.l2_normalize(mat1, dim=2)
-            norm_mat2 = tf.nn.l2_normalize(mat2, dim=2)
-            alpha = tf.reduce_sum(tf.expand_dims(norm_mat1, dim=2) * norm_mat2, axis=3) # (?, 750, 60)
+            # norm_mat1 = tf.nn.l2_normalize(mat1, dim=2)
+            # norm_mat2 = tf.nn.l2_normalize(mat2, dim=2)
             if op == 'mean':
+                weighted_mat2 = tf.matmul(alpha, mat2)
                 sum_alpha = 1e-6 + tf.reduce_sum(alpha, axis=2, keep_dims=True)
-                weighted_mat2 = mat2 * tf.expand_dims(alpha, dim=3)
-                mean_mat2 = tf.reduce_sum(weighted_mat2, axis=2)
-                input_mat_2 = mean_mat2 / sum_alpha
+                input_mat_2 = weighted_mat2 / sum_alpha
             elif op == 'max':
                 max_alpha_inds = tf.argmax(alpha, axis=2)
 
@@ -310,8 +320,8 @@ class QASystem(object):
         # ==== assemble pieces ====
         with tf.variable_scope("qa", initializer=tf.uniform_unit_scaling_initializer(1.0)):
             self.setup_embeddings()
-            self.setup_system_baseline()
-            # self.setup_system_bmpm()
+            # self.setup_system_baseline()
+            self.setup_system_bmpm()
             self.setup_loss()
 
         # ==== set up training/updating procedure ====
@@ -381,15 +391,16 @@ class QASystem(object):
         # step 4
         self.a_s, self.a_e = self.decoder.decode(p_4_concat_state)
 
+
     def bmpm_layer(self, from_fw_all_h, from_bw_all_h, p_fw_last_h, p_bw_last_h, to_fw_all_h, to_bw_all_h, to_fw_last_h,
-                   to_bw_last_h, scope):
+                   to_bw_last_h, alpha_fw, alpha_bw, scope):
         with vs.variable_scope(scope):
             m_full_fw = self.encoder.f_m_mat_vec(from_fw_all_h, to_fw_last_h, scope='W1')
             m_full_bw = self.encoder.f_m_mat_vec(from_bw_all_h, to_bw_last_h, scope='W2')
             m_max_fw = self.encoder.f_m_mat_mat_pool(from_fw_all_h, to_fw_all_h, 'max', scope='W3')
             m_max_bw = self.encoder.f_m_mat_mat_pool(from_bw_all_h, to_bw_all_h, 'max', scope='W4')
-            m_attentive_matching_mean_fw = self.encoder.attentive_matching(from_fw_all_h, to_fw_all_h, 'mean', scope='W5')
-            m_attentive_matching_mean_bw = self.encoder.attentive_matching(from_bw_all_h, to_bw_all_h, 'mean', scope='W6')
+            m_attentive_matching_mean_fw = self.encoder.attentive_matching(from_fw_all_h, to_fw_all_h, alpha_fw, 'mean', scope='W5')
+            m_attentive_matching_mean_bw = self.encoder.attentive_matching(from_bw_all_h, to_bw_all_h, alpha_bw, 'mean', scope='W6')
             # m_attentive_matching_max_fw = self.encoder.attentive_matching(from_fw_all_h, to_fw_all_h, 'max', scope='W7')
             # m_attentive_matching_max_bw = self.encoder.attentive_matching(from_bw_all_h, to_bw_all_h, 'max', scope='W8')
 
@@ -401,8 +412,12 @@ class QASystem(object):
 
         (p_fw_all_h, p_bw_all_h), (p_fw_last_h, p_bw_last_h) = self.encoder.encode_bilstm(self.paragraph_var, self.paragraph_mask, stage='context_rep', concat=False, scope='paragraph')
         (q_fw_all_h, q_bw_all_h), (q_fw_last_h, q_bw_last_h) = self.encoder.encode_bilstm(self.question_var, self.question_mask, stage='context_rep', concat=False, scope='question')
-        m_p = self.bmpm_layer(p_fw_all_h, p_bw_all_h, p_fw_last_h, p_bw_last_h, q_fw_all_h, q_bw_all_h, q_fw_last_h, q_bw_last_h, scope ='p_bmpm')
-        m_q = self.bmpm_layer(q_fw_all_h, q_bw_all_h, q_fw_last_h, q_bw_last_h, p_fw_all_h, p_bw_all_h, p_fw_last_h, p_bw_last_h, scope ='q_bmpm')
+        alpha_fw = self.encoder.compare_states(p_fw_all_h, q_fw_all_h)
+        alpha_bw = self.encoder.compare_states(p_bw_all_h, q_bw_all_h)
+        m_p = self.bmpm_layer(p_fw_all_h, p_bw_all_h, p_fw_last_h, p_bw_last_h, q_fw_all_h, q_bw_all_h, q_fw_last_h, q_bw_last_h,
+                              alpha_fw, alpha_bw, scope='p_bmpm')
+        m_q = self.bmpm_layer(q_fw_all_h, q_bw_all_h, q_fw_last_h, q_bw_last_h, p_fw_all_h, p_bw_all_h, p_fw_last_h, p_bw_last_h,
+                              tf.transpose(alpha_fw, [0,2,1]), tf.transpose(alpha_bw, [0,2,1]), scope='q_bmpm')
         (_, _), (p_agg_fw_last_h, p_agg_bw_last_h) = self.encoder.encode_bilstm(m_p,
                                                                        self.paragraph_mask,
                                                                        stage='aggregation', concat=False,
@@ -631,7 +646,7 @@ class QASystem(object):
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
         saver = tf.train.Saver()
-        
+        '''
         for e in range(self.FLAGS.epochs):
             batch_num = 0
             for p, q, a in util.load_dataset("data/squad/train.ids.context", "data/squad/train.ids.question",
@@ -664,4 +679,4 @@ class QASystem(object):
             updates, loss, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
             logging.info('Epoch: {}. Loss:{}'.format(e, loss))
             print("Loss: " + str(loss) + " ------ Gradient Norm: " + str(grad_norm))
-        '''
+
