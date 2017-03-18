@@ -53,6 +53,8 @@ class Encoder(object):
             tf.nn.rnn_cell.BasicLSTMCell(self.total_m_size),
             output_keep_prob=self.dropout)
 
+        self.max_paragraph_size = 750
+
     def last_hidden_state(self, fw_o, bw_o, srclen, concat, hidden_size):
         # https://danijar.com/variable-sequence-lengths-in-tensorflow/
         idx = tf.range(tf.shape(fw_o)[0]) * tf.shape(fw_o)[1] + (srclen - 1)
@@ -137,6 +139,26 @@ class Encoder(object):
 
             srclen = tf.reduce_sum(tf.cast(reference_masks, tf.int32), axis=1)
             return weighted_reference_states, self.last_hidden_state(weighted_reference_states, None, srclen, False, self.size)
+
+    def allen_step_three(self, input, encoder_input, encoder_mask, scope="", reuse=False):
+        with vs.variable_scope(scope, reuse):
+            y_mask = tf.expand_dims(encoder_mask, dim = 1)
+
+            A = batch_matmul(input, tf.matrix_transpose(encoder_input))
+            A = tf.exp(A - tf.reduce_max(A, reduction_indices=2, keep_dims=True))
+            A = A*tf.cast(y_mask, tf.float64)
+            A = A / (1e-6 + tf.reduce_sum(A, reduction_indices=2, keep_dims=True))
+            C_P = batch_matmul(A, encoder_input)
+
+            # part b: Mix it with P
+            P = tf.concat(2, [C_P, input])  # [None, 750, 2*hidden]
+
+            matrix_W = tf.get_variable("matrix_W", shape =[self.size*2, self.size], initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float64)
+            #matrix_b = tf.get_variable("matrix_b", shape=[750, self.size], initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float64)
+            P_flat = tf.reshape(P, [-1, self.size*2])
+            P = tf.reshape(tf.matmul(P_flat, matrix_W), [-1, self.max_paragraph_size, self.size])
+
+        return P
 
 
     def encode_w_gru_attn(self, inputs, masks, encoder_outputs, encoder_masks, init_state=None, scope="", reuse=False):
@@ -273,9 +295,10 @@ class GRUAttnCell(tf.nn.rnn_cell.GRUCell):
 
 
 class Decoder(object):
-    def __init__(self, output_size, num_perspectives):
+    def __init__(self, output_size, num_perspectives, hidden_state_size):
         self.output_size = output_size  # output size
         self.num_perspectives = num_perspectives
+        self.hidden_state_size = hidden_state_size # size of hidden state
 
     def decode(self, knowledge_rep):
         """
@@ -302,6 +325,19 @@ class Decoder(object):
     #     with vs.variable_scope("answer_end"):
     #         a_e = tf.nn.rnn_cell._linear(end_knowledge_rep, output_size=self.output_size, bias=True)
     #     return a_s, a_e
+
+    def decode_matrix(self, knowledge_states, scope="", reuse=False):
+
+        with vs.variable_scope(scope, reuse):
+            batch_size = tf.shape(knowledge_states)[0]
+
+            vector_W = tf.get_variable("vector_W", shape =[self.hidden_state_size, 1], initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float64)
+            knowledge_states_flat = tf.reshape(knowledge_states, [-1, self.hidden_state_size])
+            pred_ = tf.matmul(knowledge_states_flat, vector_W)
+            pred = tf.reshape(pred_, [batch_size, -1])
+            pred = pred
+
+        return pred
 
 
 class QASystem(object):
@@ -334,8 +370,10 @@ class QASystem(object):
         # ==== assemble pieces ====
         with tf.variable_scope("qa", initializer=tf.uniform_unit_scaling_initializer(1.0)):
             self.setup_embeddings()
-            # self.setup_system_baseline()
-            self.setup_system_bmpm()
+            if self.FLAGS.model == 'baseline':
+                self.setup_system_baseline()
+            else:
+                self.setup_system_bmpm()
             self.setup_loss()
 
         # ==== set up training/updating procedure ====
@@ -378,6 +416,8 @@ class QASystem(object):
         self.a_s, self.a_e = self.decoder.decode_gru(p_4_last_state, q_4_last_state)
         """
 
+        """
+        ###### OLD BASELINE MODEL ------ START ######
         # step 1
         q_states, q_last_state = self.encoder.encode_gru(self.question_var, self.question_mask, scope='question')
         # step 2
@@ -404,6 +444,28 @@ class QASystem(object):
 
         # step 4
         self.a_s, self.a_e = self.decoder.decode(p_4_concat_state)
+
+        ###### OLD BASELINE MODEL ------ END ######
+        """
+
+        # step 1
+        q_states, q_last_state = self.encoder.encode_gru(self.question_var, self.question_mask, scope='question')
+
+        # step 2
+        p_states, p_last_state = self.encoder.encode_gru(self.paragraph_var, self.paragraph_mask,
+                                                         scope='paragraph_attn')
+
+        # step 3
+        # mixer step
+        p_3_states = self.encoder.allen_step_three(p_states, q_states, self.question_mask, scope='p3')
+
+        # step 4
+        p_4_states, _ = self.encoder.encode_gru(p_3_states, self.paragraph_mask, scope='p4')
+        self.a_s = self.decoder.decode_matrix(p_4_states, scope='answer_start')
+
+        # step 5
+        p_5_states, _ = self.encoder.encode_gru(p_4_states, self.paragraph_mask, scope='p5')
+        self.a_e = self.decoder.decode_matrix(p_5_states, scope='answer_end')
 
 
     def bmpm_layer(self, from_fw_all_h, from_bw_all_h, p_fw_last_h, p_bw_last_h, to_fw_all_h, to_bw_all_h, to_fw_last_h,
@@ -697,17 +759,41 @@ class QASystem(object):
             f1, em = self.evaluate_answer(session, sample=100, log=True)
 
         '''
-        for e in range(80):
+        if self.FLAGS.testing == 'test':
 
-            p, q, a = util.load_single_dataset("data/squad/train.ids.context", "data/squad/train.ids.question",
-                                             "data/squad/train.span", self.FLAGS.batch_size)
-            a_s, a_e = zip(*a) # self.one_hot_func(a)
-            q, q_mask = self.mask_and_pad(q, 'question')
-            p, p_mask = self.mask_and_pad(p, 'paragraph')
+            for e in range(80):
 
-            updates, loss, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
-            logging.info('Epoch: {}. Loss:{}'.format(e, loss))
-            print("Loss: " + str(loss) + " ------ Gradient Norm: " + str(grad_norm))
+                p, q, a = util.load_single_dataset("data/squad/train.ids.context", "data/squad/train.ids.question",
+                                                 "data/squad/train.span", self.FLAGS.batch_size)
+                a_s, a_e = zip(*a) # self.one_hot_func(a)
+                q, q_mask = self.mask_and_pad(q, 'question')
+                p, p_mask = self.mask_and_pad(p, 'paragraph')
 
-            f1, em = self.evaluate_answer(session, sample=10, random=False, log=True)
+                updates, loss, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
+                logging.info('Epoch: {}. Loss:{}'.format(e, loss))
+                print("Loss: " + str(loss) + " ------ Gradient Norm: " + str(grad_norm))
+
+                f1, em = self.evaluate_answer(session, sample=10, random=False, log=True)
+        else:
+            for e in range(self.FLAGS.epochs):
+                batch_num = 0
+                for p, q, a in util.load_dataset("data/squad/train.ids.context", "data/squad/train.ids.question",
+                                                 "data/squad/train.span", self.FLAGS.batch_size,
+                                                 self.FLAGS.max_paragraph_size, in_batches=True, random=False):
+                    a_s, a_e = zip(*a)  # self.one_hot_func(a)
+                    q, q_mask = self.mask_and_pad(q, 'question')
+                    p, p_mask = self.mask_and_pad(p, 'paragraph')
+
+                    updates, loss, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
+                    logging.info('Epoch: {}. Batch: {}. Loss:{}'.format(e, batch_num, loss))
+                    batch_num += 1
+                    print("Loss: " + str(loss) + " ------ Gradient Norm: " + str(grad_norm))
+
+                saver.save(session, self.FLAGS.log_dir + '/model-weights', global_step=e)
+
+                val_loss = self.validate(session)
+                print(val_loss)
+
+                f1, em = self.evaluate_answer(session, sample=100, log=True)
+
 

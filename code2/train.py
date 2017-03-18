@@ -34,6 +34,10 @@ tf.app.flags.DEFINE_string("embed_path", "", "Path to the trimmed GLoVe embeddin
 tf.app.flags.DEFINE_string("max_paragraph_size", 750, "Path to the trimmed GLoVe embedding (default: ./data/squad/glove.trimmed.{embedding_size}.npz)")
 tf.app.flags.DEFINE_string("max_question_size", 60, "Path to the trimmed GLoVe embedding (default: ./data/squad/glove.trimmed.{embedding_size}.npz)")
 
+tf.app.flags.DEFINE_string("model", "baseline", "Which baseline should we use")
+tf.app.flags.DEFINE_string("testing", "run", "Run on same batch.")
+
+
 FLAGS = tf.app.flags.FLAGS
 
 
@@ -87,7 +91,7 @@ def main(_):
     vocab, rev_vocab = initialize_vocab(vocab_path)
 
     encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, num_perspectives=50)
-    decoder = Decoder(output_size=FLAGS.output_size, num_perspectives=50)
+    decoder = Decoder(output_size=FLAGS.output_size, num_perspectives=50, hidden_state_size=FLAGS.state_size)
 
     qa = QASystem(encoder, decoder, FLAGS)
 
