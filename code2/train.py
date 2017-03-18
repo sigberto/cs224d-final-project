@@ -16,12 +16,13 @@ logging.basicConfig(level=logging.INFO)
 
 tf.app.flags.DEFINE_float("learning_rate", 0.001, "Learning rate.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 10.0, "Clip gradients to this norm.")
-tf.app.flags.DEFINE_float("dropout", 0.15, "Fraction of units randomly dropped on non-recurrent connections.")
+tf.app.flags.DEFINE_float("dropout_keep_prob", 0.85, "Fraction of units randomly dropped on non-recurrent connections.")
 tf.app.flags.DEFINE_integer("batch_size", 10, "Batch size to use during training.")
 tf.app.flags.DEFINE_integer("epochs", 8, "Number of epochs to train.")
 tf.app.flags.DEFINE_integer("state_size", 200, "Size of each model layer.")
 tf.app.flags.DEFINE_integer("output_size", 750, "The output size of your model.")
 tf.app.flags.DEFINE_integer("embedding_size", 100, "Size of the pretrained vocabulary.")
+tf.app.flags.DEFINE_integer("num_perspectives", 50, "Dimension of perspectives matrix in BMPM.")
 tf.app.flags.DEFINE_string("data_dir", "data/squad", "SQuAD directory (default ./data/squad)")
 tf.app.flags.DEFINE_string("train_dir", "train", "Training directory to save the model parameters (default: ./train).")
 tf.app.flags.DEFINE_string("load_train_dir", "", "Training directory to load model parameters from to resume training (default: {train_dir}).")
@@ -91,8 +92,8 @@ def main(_):
     vocab_path = FLAGS.vocab_path or pjoin(FLAGS.data_dir, "vocab.dat")
     vocab, rev_vocab = initialize_vocab(vocab_path)
 
-    encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, num_perspectives=50)
-    decoder = Decoder(output_size=FLAGS.output_size, num_perspectives=50, hidden_state_size=FLAGS.state_size)
+    encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, num_perspectives=FLAGS.num_perspectives, dropout_keep_prob=FLAGS.dropout_keep_prob)
+    decoder = Decoder(output_size=FLAGS.output_size, num_perspectives=FLAGS.num_perspectives, hidden_state_size=FLAGS.state_size)
 
     qa = QASystem(encoder, decoder, FLAGS)
 

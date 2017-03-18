@@ -35,13 +35,12 @@ def normalize_scores(scores, mask):
 
 
 class Encoder(object):
-    def __init__(self, size, vocab_dim, num_perspectives):
+    def __init__(self, size, vocab_dim, num_perspectives, dropout_keep_prob):
         self.size = size  # hidden size
         self.vocab_dim = vocab_dim  # embedding size
-        self.dropout = 0.85
         self.cell = tf.nn.rnn_cell.DropoutWrapper(
             tf.nn.rnn_cell.BasicLSTMCell(self.size),
-            output_keep_prob=self.dropout)
+            output_keep_prob=dropout_keep_prob)
         self.attn_cell = None
 
         # variables needed for the context + prediction steps
@@ -50,9 +49,18 @@ class Encoder(object):
         self.total_m_size = self.num_perspectives * self.num_m
         self.agg_cell = tf.nn.rnn_cell.DropoutWrapper(
             tf.nn.rnn_cell.BasicLSTMCell(self.total_m_size),
-            output_keep_prob=self.dropout)
+            output_keep_prob=dropout_keep_prob)
 
         self.max_paragraph_size = 750
+
+    def update_dropout(self, dropout_keep_prob):
+        self.cell = tf.nn.rnn_cell.DropoutWrapper(
+            tf.nn.rnn_cell.BasicLSTMCell(self.size),
+            output_keep_prob=dropout_keep_prob)
+        self.agg_cell = tf.nn.rnn_cell.DropoutWrapper(
+            tf.nn.rnn_cell.BasicLSTMCell(self.total_m_size),
+            output_keep_prob=dropout_keep_prob)
+
 
     def last_hidden_state(self, fw_o, bw_o, srclen, concat, hidden_size):
         # https://danijar.com/variable-sequence-lengths-in-tensorflow/
@@ -99,10 +107,8 @@ class Encoder(object):
     def encode_bilstm(self, inputs, masks, concat, stage, f_init_state=None, b_init_state=None, scope="", reuse=False):
         if stage == 'context_rep':
             cell = self.cell
-            # hidden_size = self.size
         elif stage == 'aggregation':
             cell = self.agg_cell
-            # hidden_size = self.total_m_size
         else:
             raise ValueError('stage of processing is not one of ("context_rep", "aggregation")')
         with vs.variable_scope(scope, reuse=reuse):
@@ -361,7 +367,7 @@ class QASystem(object):
         self.question_mask = tf.placeholder(tf.int32, [None, self.FLAGS.max_question_size])
         self.paragraph_mask = tf.placeholder(tf.int32, [None,self.FLAGS.max_paragraph_size])
 
-        # self.dropout = tf.placeholder(tf.float64, ())
+        self.dropout = tf.placeholder(tf.float64, shape=())
 
         self.encoder = encoder
         self.decoder = decoder
@@ -446,7 +452,7 @@ class QASystem(object):
 
         ###### OLD BASELINE MODEL ------ END ######
         """
-
+        self.encoder.update_dropout(self.dropout)
         # step 1
         q_states, q_last_state = self.encoder.encode_gru(self.question_var, self.question_mask, scope='question')
 
@@ -536,7 +542,7 @@ class QASystem(object):
             self.paragraph_var = tf.nn.embedding_lookup(embedding, self.paragraph)
             self.question_var = tf.nn.embedding_lookup(embedding, self.question)
 
-    def optimize(self, session, paragraph, paragraph_mask, question, question_mask, answer_start, answer_end):
+    def optimize(self, session, paragraph, paragraph_mask, question, question_mask, answer_start, answer_end, dropout):
         """
         Takes in actual data to optimize your model
         This method is equivalent to a step() function
@@ -555,7 +561,7 @@ class QASystem(object):
         input_feed[self.question_mask] = question_mask
         input_feed[self.start_answer] = answer_start
         input_feed[self.end_answer] = answer_end
-        # input_feed[self.dropout] = dropout
+        input_feed[self.dropout] = dropout
 
         # grad_norm, param_norm
         output_feed = [self.updates, self.loss, self.grad_norm]
@@ -579,6 +585,7 @@ class QASystem(object):
         input_feed[self.question_mask] = question_mask
         input_feed[self.start_answer] = answer_start
         input_feed[self.end_answer] = answer_end
+        input_feed[self.dropout] = 1.0
 
         output_feed = [self.loss]
 
@@ -601,8 +608,9 @@ class QASystem(object):
         input_feed[self.question] = question
         input_feed[self.paragraph_mask] = p_mask
         input_feed[self.question_mask] = q_mask
+        input_feed[self.dropout] = 1.0
 
-        output_feed = [self.a_s, self.a_e, self.a_ss, self.a_es]
+        output_feed = [self.a_s, self.a_e]
 
         outputs = session.run(output_feed, input_feed)
 
@@ -745,7 +753,7 @@ class QASystem(object):
         params = tf.trainable_variables()
         num_params = sum(map(lambda t: np.prod(tf.shape(t.value()).eval()), params))
         toc = time.time()
-        logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
+        logging.info("Number of params: %d (retrieval took %f secs)" % (num_params, toc - tic))
         saver = tf.train.Saver()
         '''
         for e in range(self.FLAGS.epochs):
@@ -780,7 +788,7 @@ class QASystem(object):
                 q, q_mask = self.mask_and_pad(q, 'question')
                 p, p_mask = self.mask_and_pad(p, 'paragraph')
 
-                updates, loss, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
+                updates, loss, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e, dropout=self.FLAGS.dropout_keep_prob)
                 logging.info('Epoch: {}. Loss:{}'.format(e, loss))
                 print("Loss: " + str(loss) + " ------ Gradient Norm: " + str(grad_norm))
 
@@ -796,7 +804,7 @@ class QASystem(object):
                     q, q_mask = self.mask_and_pad(q, 'question')
                     p, p_mask = self.mask_and_pad(p, 'paragraph')
 
-                    updates, loss, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
+                    updates, loss, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e, dropout=self.FLAGS.dropout_keep_prob)
                     logging.info('Epoch: {}. Batch: {}. Loss:{}'.format(e, batch_num, loss))
                     batch_num += 1
                     print("Loss: " + str(loss) + " ------ Gradient Norm: " + str(grad_norm))
