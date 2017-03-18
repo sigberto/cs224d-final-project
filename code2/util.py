@@ -58,3 +58,81 @@ def load_single_dataset(f1, f2, f3, batch_size):
         batch3.append([int(x) for x in line3.split()])
 
     return batch1, batch2, batch3
+
+def get_minibatches(data, minibatch_size, shuffle=True):
+    """
+    Iterates through the provided data one minibatch at at time. You can use this function to
+    iterate through data in minibatches as follows:
+
+        for inputs_minibatch in get_minibatches(inputs, minibatch_size):
+            ...
+
+    Or with multiple data sources:
+
+        for inputs_minibatch, labels_minibatch in get_minibatches([inputs, labels], minibatch_size):
+            ...
+
+    Args:
+        data: there are two possible values:
+            - a list or numpy array
+            - a list where each element is either a list or numpy array
+        minibatch_size: the maximum number of items in a minibatch
+        shuffle: whether to randomize the order of returned data
+    Returns:
+        minibatches: the return value depends on data:
+            - If data is a list/array it yields the next minibatch of data.
+            - If data a list of lists/arrays it returns the next minibatch of each element in the
+              list. This can be used to iterate through multiple data sources
+              (e.g., features and labels) at the same time.
+
+    """
+    list_data = type(data) is list and (type(data[0]) is list or type(data[0]) is np.ndarray)
+    data_size = len(data[0]) if list_data else len(data)
+    indices = np.arange(data_size)
+    if shuffle:
+        np.random.shuffle(indices)
+    for minibatch_start in np.arange(0, data_size, minibatch_size):
+        minibatch_indices = indices[minibatch_start:minibatch_start + minibatch_size]
+        yield [minibatch(d, minibatch_indices) for d in data] if list_data \
+            else minibatch(data, minibatch_indices)
+
+
+def minibatch(data, minibatch_idx):
+    return data[minibatch_idx] if type(data) is np.ndarray else [data[i] for i in minibatch_idx]
+
+def minibatches(data, batch_size, shuffle=True):
+    batches = [np.array(col) for col in zip(*data)]
+    return get_minibatches(batches, batch_size, shuffle)
+
+
+def read_dataset(paragraph_file, question_file, answer_file, max_paragraph_len):
+    paragraph_stream, question_stream, answer_stream = open(paragraph_file), open(question_file), open(answer_file)
+    dataset = []
+
+    while True:
+        raw_paragraph = [int(x) for x in paragraph_stream.readline().split()]
+        if not raw_paragraph: break
+        if len(raw_paragraph) > max_paragraph_len: continue
+
+        raw_question = [int(x) for x in question_stream.readline().split()]
+        #if len(raw_question.split(" ")) <= 2: continue # toss out bad questions
+        raw_answer = [int(x) for x in answer_stream.readline().split()]
+        
+        dataset.append((raw_paragraph, raw_question, raw_answer))
+
+    question_stream.close()
+    paragraph_stream.close()
+    answer_stream.close()
+
+    return dataset
+
+
+def sample_dataset(dataset, sample=100):
+    size = len(dataset)
+    random_indexes = np.random.choice(size, sample, replace=False)
+    output = []
+
+    for idx in random_indexes:
+        output.append(dataset[idx])
+
+    return output

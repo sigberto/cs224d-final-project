@@ -10,6 +10,8 @@ import tensorflow as tf
 from qa_model import Encoder, QASystem, Decoder
 from os.path import join as pjoin
 
+import util
+
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -89,6 +91,10 @@ def main(_):
     FLAGS.embed_path = FLAGS.embed_path or pjoin("data", "squad", "glove.trimmed.{}.npz".format(FLAGS.embedding_size))
     vocab_path = FLAGS.vocab_path or pjoin(FLAGS.data_dir, "vocab.dat")
     vocab, rev_vocab = initialize_vocab(vocab_path)
+    train_dataset = util.read_dataset("data/squad/train.ids.context", "data/squad/train.ids.question", "data/squad/train.span", FLAGS.max_paragraph_size)
+    val_dataset = util.read_dataset("data/squad/val.ids.context", "data/squad/val.ids.question", "data/squad/val.span", FLAGS.max_paragraph_size)
+
+    #import pdb; pdb.set_trace()
 
     encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, num_perspectives=50)
     decoder = Decoder(output_size=FLAGS.output_size, num_perspectives=50, hidden_state_size=FLAGS.state_size)
@@ -109,7 +115,7 @@ def main(_):
         initialize_model(sess, qa, load_train_dir)
 
         save_train_dir = get_normalized_train_dir(FLAGS.train_dir)
-        qa.train(sess, dataset, save_train_dir)
+        qa.train(sess, train_dataset, save_train_dir, val_dataset)
 
         qa.evaluate_answer(sess, dataset, vocab, FLAGS.evaluate, log=True)
 

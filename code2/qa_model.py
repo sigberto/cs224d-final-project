@@ -598,16 +598,19 @@ class QASystem(object):
 
         return outputs
 
-    def answer(self, session, paragraph, p_mask, question, q_mask):
+    def answer(self, session, paragraphs, questions):
 
-        yp, yp2 = self.decode(session, paragraph, p_mask, question, q_mask)
+        questions, question_masks = self.mask_and_pad(questions, 'question')
+        paragraphs, paragraph_masks = self.mask_and_pad(paragraphs, 'paragraph')
+
+        yp, yp2 = self.decode(session, paragraphs, paragraph_masks, questions, question_masks)
 
         a_s = np.argmax(yp, axis=1)
         a_e = np.argmax(yp2, axis=1)
 
         return (a_s, a_e)
 
-    def validate(self, session):
+    def validate(self, session, val_dataset):
         """
         Iterate through the validation dataset and determine what
         the validation cost is.
@@ -615,25 +618,24 @@ class QASystem(object):
         How you implement this function is dependent on how you design
         your data iteration function
         :return:
-        """
-        validate_prefix = self.FLAGS.data_dir + '/val.'
-        context_file = validate_prefix + 'ids.context'
-        question_file = validate_prefix + 'ids.question'
-        answer_file = validate_prefix + 'span'
+        """ 
 
-        valid_cost = 0
 
-        for p, q, a in util.load_dataset(context_file, question_file, answer_file, self.FLAGS.batch_size,
-                                         in_batches=True):
-            a_s, a_e = zip(*a) # self.one_hot_func(a)
+        val_cost = 0.0
+
+        for batch_num, batch in enumerate(util.minibatches(val_dataset, self.FLAGS.batch_size, shuffle=False)):
+            p, q, a = batch
+            a_s, a_e = zip(*a)  # self.one_hot_func(a)
             q, q_mask = self.mask_and_pad(q, 'question')
             p, p_mask = self.mask_and_pad(p, 'paragraph')
 
-            valid_cost += self.test(session, p, p_mask, q, q_mask, a_s, a_e)
+            val_cost += self.test(session, p, p_mask, q, q_mask, a_s, a_e)
 
-        return valid_cost
+        return val_cost
 
-    def evaluate_answer(self, session, sample=100, random=False, log=False):
+    def evaluate_answer(self, session, dataset, sample=None, random=True,log=False):
+    #def evaluate_answer(self, session, sample=100, random=False, log=False):
+
         """
         Evaluate the model's performance using the harmonic mean of F1 and Exact Match (EM)
         with the set of true answer labels
@@ -646,24 +648,24 @@ class QASystem(object):
         :param log: whether we print to std out stream
         :return:
         """
-        from evaluate import f1_score, exact_match_score
-        # use these functions to determine how the model is actually doing
-
         f1_raw = 0.
         em_raw = 0.
 
-        output = util.load_dataset("data/squad/train.ids.context", "data/squad/train.ids.question", "data/squad/train.span", sample, self.FLAGS.output_size, in_batches=True, random=random)
-        p, q, answers = output.next()
-        answer_starts, answer_ends = self.one_hot_func(answers)
-        questions, question_masks = self.mask_and_pad(q, 'question')
-        paragraphs, paragraph_masks = self.mask_and_pad(p, 'paragraph')
-        pred_a_s, pred_a_e = self.answer(session, paragraphs, paragraph_masks, questions, question_masks)
+        sample_dataset = dataset
+        if sample:
+            sample_dataset = util.sample_dataset(dataset, sample)
 
-        for question, q_mask, paragraph, p_mask, answer, a_s, a_e in zip(questions, question_masks, paragraphs, paragraph_masks, answers, pred_a_s, pred_a_e):
-            ground_truth = ' '.join([str(i) for i in paragraph[answer[0] : answer[1] + 1]])
-            prediction = ' '.join([str(i) for i in paragraph[a_s : a_e + 1]])
-            f1_raw += f1_score(prediction, ground_truth)
-            em_raw += exact_match_score(prediction, ground_truth)
+        for batch_num, batch in enumerate(util.minibatches(sample_dataset, self.FLAGS.batch_size, shuffle=False)):
+            paragraphs, questions, answers = batch
+
+            pred_a_s, pred_a_e = self.answer(session, paragraphs, questions)
+
+            for paragraph, answer, a_s, a_e in zip(paragraphs, answers, pred_a_s, pred_a_e):
+                ground_truth = ' '.join([str(i) for i in paragraph[answer[0] : answer[1] + 1]])
+                prediction = ' '.join([str(i) for i in paragraph[a_s : a_e + 1]])
+                f1_raw += f1_score(prediction, ground_truth)
+                em_raw += exact_match_score(prediction, ground_truth)
+
 
         f1 = f1_raw / float(sample)
         em = em_raw / float(sample)
@@ -704,7 +706,7 @@ class QASystem(object):
             padded_sentences.append(padded_s)
         return np.asarray(padded_sentences, dtype=np.int32), np.asarray(masks, dtype=np.int32)
 
-    def train(self, session, dataset, train_dir):
+    def train(self, session, train_dataset, train_dir, val_dataset=None):
         """
         Implement main training loop
         TIPS:
@@ -723,77 +725,34 @@ class QASystem(object):
         :return:
         """
 
-        # some free code2 to print out number of parameters in your model
-        # it's always good to check!
-        # you will also want to save your model parameters in train_dir
-        # so that you can use your trained model to make predictions, or
-        # even continue training
-
-
         tic = time.time()
         params = tf.trainable_variables()
         num_params = sum(map(lambda t: np.prod(tf.shape(t.value()).eval()), params))
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
         saver = tf.train.Saver()
-        '''
-        for e in range(self.FLAGS.epochs):
-            batch_num = 0
-            for p, q, a in util.load_dataset("data/squad/train.ids.context", "data/squad/train.ids.question",
-                                             "data/squad/train.span", self.FLAGS.batch_size,
-                                             self.FLAGS.max_paragraph_size, in_batches=True):
-                a_s, a_e = zip(*a) # self.one_hot_func(a)
+
+        epochs = 80 if self.FLAGS.testing == 'test' else self.FLAGS.epochs
+
+        for e in range(epochs):
+            for batch_num, batch in enumerate(util.minibatches(train_dataset, self.FLAGS.batch_size, shuffle=False)):
+                p, q, a = batch
+                a_s, a_e = zip(*a)  # self.one_hot_func(a)
                 q, q_mask = self.mask_and_pad(q, 'question')
                 p, p_mask = self.mask_and_pad(p, 'paragraph')
 
                 updates, loss, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
                 logging.info('Epoch: {}. Batch: {}. Loss:{}'.format(e, batch_num, loss))
-                batch_num += 1
                 print("Loss: " + str(loss) + " ------ Gradient Norm: " + str(grad_norm))
+                if self.FLAGS.testing == 'test': break
 
             saver.save(session, self.FLAGS.log_dir + '/model-weights', global_step=e)
 
-            val_loss = self.validate(session)
-            print(val_loss)
+            #if val_dataset:
+            #    val_loss = self.validate(session, val_dataset)
+            #    logging.info("Validation Loss: %s", val_loss)
 
-            f1, em = self.evaluate_answer(session, sample=100, log=True)
 
-        '''
-        if self.FLAGS.testing == 'test':
-
-            for e in range(80):
-
-                p, q, a = util.load_single_dataset("data/squad/train.ids.context", "data/squad/train.ids.question",
-                                                 "data/squad/train.span", self.FLAGS.batch_size)
-                a_s, a_e = zip(*a) # self.one_hot_func(a)
-                q, q_mask = self.mask_and_pad(q, 'question')
-                p, p_mask = self.mask_and_pad(p, 'paragraph')
-
-                updates, loss, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
-                logging.info('Epoch: {}. Loss:{}'.format(e, loss))
-                print("Loss: " + str(loss) + " ------ Gradient Norm: " + str(grad_norm))
-
-                f1, em = self.evaluate_answer(session, sample=10, random=False, log=True)
-        else:
-            for e in range(self.FLAGS.epochs):
-                batch_num = 0
-                for p, q, a in util.load_dataset("data/squad/train.ids.context", "data/squad/train.ids.question",
-                                                 "data/squad/train.span", self.FLAGS.batch_size,
-                                                 self.FLAGS.max_paragraph_size, in_batches=True, random=False):
-                    a_s, a_e = zip(*a)  # self.one_hot_func(a)
-                    q, q_mask = self.mask_and_pad(q, 'question')
-                    p, p_mask = self.mask_and_pad(p, 'paragraph')
-
-                    updates, loss, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
-                    logging.info('Epoch: {}. Batch: {}. Loss:{}'.format(e, batch_num, loss))
-                    batch_num += 1
-                    print("Loss: " + str(loss) + " ------ Gradient Norm: " + str(grad_norm))
-
-                saver.save(session, self.FLAGS.log_dir + '/model-weights', global_step=e)
-
-                val_loss = self.validate(session)
-                print(val_loss)
-
-                f1, em = self.evaluate_answer(session, sample=100, log=True)
+            f1, em = self.evaluate_answer(session, train_dataset, sample=100, log=True)
 
 
