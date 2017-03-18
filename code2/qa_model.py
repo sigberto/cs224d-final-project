@@ -305,9 +305,10 @@ class GRUAttnCell(tf.nn.rnn_cell.GRUCell):
 
 
 class Decoder(object):
-    def __init__(self, output_size, num_perspectives, hidden_state_size):
+    def __init__(self, output_size, num_perspectives, num_perspective_classes, hidden_state_size):
         self.output_size = output_size  # output size
         self.num_perspectives = num_perspectives
+        self.num_perspective_classes = num_perspective_classes
         self.hidden_state_size = hidden_state_size # size of hidden state
 
     def decode(self, knowledge_rep, scope):
@@ -344,6 +345,17 @@ class Decoder(object):
             pred = tf.reshape(pred_, [batch_size, -1])
         return pred
 
+    # 2-layer feedforward
+    def decode_bmpm(self, knowledge_states, scope, reuse=False):
+        input_dim = 8*self.hidden_state_size
+        with vs.variable_scope(scope):
+            W1 = tf.get_variable("W1", shape=[input_dim, self.output_size], initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float64)
+            W2 = tf.get_variable("W2", shape=[self.output_size, self.output_size], initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float64)
+            b1 = tf.get_variable("b1", shape=[self.output_size], initializer=tf.constant_initializer(0.0), dtype=tf.float64)
+            b2 = tf.get_variable("b2", shape=[self.output_size], initializer=tf.constant_initializer(0.0), dtype=tf.float64)
+            s_layer1 = tf.nn.relu(tf.matmul(knowledge_states, W1) + b1)
+            a_i = tf.matmul(s_layer1, W2) + b2
+            return a_i
 
 class QASystem(object):
     def __init__(self, encoder, decoder, FLAGS):
@@ -518,7 +530,8 @@ class QASystem(object):
                                                                        stage='aggregation', concat=False,
                                                                        scope='q_aggregation')
         knowledge_rep = tf.concat(1, [p_agg_fw_last_h, p_agg_bw_last_h, q_agg_fw_last_h, q_agg_bw_last_h])
-        self.a_s, self.a_e = self.decoder.decode(knowledge_rep)
+        self.a_s = self.decoder.decode_bmpm(knowledge_rep, scope='answer_start')
+        self.a_e = self.decoder.decode_bmpm(knowledge_rep, scope='answer_end')
 
     def setup_loss(self):
         """
@@ -526,7 +539,6 @@ class QASystem(object):
         :return:
         """
         with vs.variable_scope("loss"):
-            #tf.select(mask, tensor, tf.ones_like(tensor) * LARGE_NEGATIVE) #2849
             l1 = tf.nn.sparse_softmax_cross_entropy_with_logits(self.a_s, self.start_answer)
             l2 = tf.nn.sparse_softmax_cross_entropy_with_logits(self.a_e, self.end_answer)
             self.loss = tf.reduce_mean(l1 + l2)
@@ -794,7 +806,7 @@ class QASystem(object):
 
                 f1, em = self.evaluate_answer(session, sample=10, random=False, log=True)
         else:
-            print('Training')
+            print('Training over entire dataset')
             for e in range(self.FLAGS.epochs):
                 batch_num = 0
                 for p, q, a in util.load_dataset("data/squad/train.ids.context", "data/squad/train.ids.question",

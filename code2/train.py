@@ -23,6 +23,7 @@ tf.app.flags.DEFINE_integer("state_size", 200, "Size of each model layer.")
 tf.app.flags.DEFINE_integer("output_size", 750, "The output size of your model.")
 tf.app.flags.DEFINE_integer("embedding_size", 100, "Size of the pretrained vocabulary.")
 tf.app.flags.DEFINE_integer("num_perspectives", 50, "Dimension of perspectives matrix in BMPM.")
+tf.app.flags.DEFINE_integer("num_perspective_classes", 6, "Dimension of perspectives matrix in BMPM.")
 tf.app.flags.DEFINE_string("data_dir", "data/squad", "SQuAD directory (default ./data/squad)")
 tf.app.flags.DEFINE_string("train_dir", "train", "Training directory to save the model parameters (default: ./train).")
 tf.app.flags.DEFINE_string("load_train_dir", "", "Training directory to load model parameters from to resume training (default: {train_dir}).")
@@ -37,7 +38,7 @@ tf.app.flags.DEFINE_string("max_paragraph_size", 750, "Path to the trimmed GLoVe
 tf.app.flags.DEFINE_string("max_question_size", 60, "Path to the trimmed GLoVe embedding (default: ./data/squad/glove.trimmed.{embedding_size}.npz)")
 
 tf.app.flags.DEFINE_string("model", "baseline", "Which baseline should we use")
-tf.app.flags.DEFINE_string("testing", "test", "Run on same batch.")
+tf.app.flags.DEFINE_string("testing", "train", "Run on same batch.")
 
 
 FLAGS = tf.app.flags.FLAGS
@@ -92,8 +93,10 @@ def main(_):
     vocab_path = FLAGS.vocab_path or pjoin(FLAGS.data_dir, "vocab.dat")
     vocab, rev_vocab = initialize_vocab(vocab_path)
 
-    encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, num_perspectives=FLAGS.num_perspectives, dropout_keep_prob=FLAGS.dropout_keep_prob)
-    decoder = Decoder(output_size=FLAGS.output_size, num_perspectives=FLAGS.num_perspectives, hidden_state_size=FLAGS.state_size)
+    encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, num_perspectives=FLAGS.num_perspectives,
+                      dropout_keep_prob=FLAGS.dropout_keep_prob)
+    decoder = Decoder(output_size=FLAGS.output_size, num_perspectives=FLAGS.num_perspectives,
+                      num_perspective_classes=FLAGS.num_perspective_classes,  hidden_state_size=FLAGS.state_size)
 
     qa = QASystem(encoder, decoder, FLAGS)
 
