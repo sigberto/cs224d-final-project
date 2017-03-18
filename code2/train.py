@@ -26,6 +26,7 @@ tf.app.flags.DEFINE_string("data_dir", "data/squad", "SQuAD directory (default .
 tf.app.flags.DEFINE_string("train_dir", "train", "Training directory to save the model parameters (default: ./train).")
 tf.app.flags.DEFINE_string("load_train_dir", "", "Training directory to load model parameters from to resume training (default: {train_dir}).")
 tf.app.flags.DEFINE_string("log_dir", "log", "Path to store log and flag files (default: ./log)")
+tf.app.flags.DEFINE_string("weights_dir", "weights", "Path to store weights (default: ./weights)")
 tf.app.flags.DEFINE_string("optimizer", "adam", "adam / sgd")
 tf.app.flags.DEFINE_integer("print_every", 1, "How many iterations to do per print.")
 tf.app.flags.DEFINE_integer("keep", 0, "How many checkpoints to keep, 0 indicates keep all.")
@@ -35,7 +36,7 @@ tf.app.flags.DEFINE_string("max_paragraph_size", 750, "Path to the trimmed GLoVe
 tf.app.flags.DEFINE_string("max_question_size", 60, "Path to the trimmed GLoVe embedding (default: ./data/squad/glove.trimmed.{embedding_size}.npz)")
 
 tf.app.flags.DEFINE_string("model", "baseline", "Which baseline should we use")
-tf.app.flags.DEFINE_string("testing", "run", "Run on same batch.")
+tf.app.flags.DEFINE_string("testing", "test", "Run on same batch.")
 
 
 FLAGS = tf.app.flags.FLAGS
