@@ -477,7 +477,6 @@ class QASystem(object):
         self.a_s = tf.nn.softmax(masked_a_s)
         self.a_e = tf.nn.softmax(masked_a_e)
 
-
     def bmpm_layer(self, from_fw_all_h, from_bw_all_h, p_fw_last_h, p_bw_last_h, to_fw_all_h, to_bw_all_h, to_fw_last_h,
                    to_bw_last_h, alpha_fw, alpha_bw, scope):
         with vs.variable_scope(scope):
@@ -603,7 +602,7 @@ class QASystem(object):
         input_feed[self.paragraph_mask] = p_mask
         input_feed[self.question_mask] = q_mask
 
-        output_feed = [self.a_s, self.a_e]
+        output_feed = [self.a_s, self.a_e, self.a_ss, self.a_es]
 
         outputs = session.run(output_feed, input_feed)
 
