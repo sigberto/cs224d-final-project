@@ -28,21 +28,19 @@ def get_optimizer(opt):
 
 
 def normalize_scores(scores, mask):
-    int_mask = tf.expand_dims(tf.cast(mask, tf.float64), dim=2)
     scores = tf.exp(scores - tf.reduce_max(scores, reduction_indices=1, keep_dims=True))
-    scores = int_mask * scores
+    scores = tf.cast(mask, tf.float64) * scores
     scores = scores / (1e-6 + tf.reduce_sum(scores, reduction_indices=1, keep_dims=True))
     return scores
 
 
 class Encoder(object):
-    def __init__(self, size, vocab_dim, num_perspectives):
+    def __init__(self, size, vocab_dim, num_perspectives, dropout_keep_prob):
         self.size = size  # hidden size
         self.vocab_dim = vocab_dim  # embedding size
-        self.dropout = 0.15
         self.cell = tf.nn.rnn_cell.DropoutWrapper(
             tf.nn.rnn_cell.BasicLSTMCell(self.size),
-            output_keep_prob=self.dropout)
+            output_keep_prob=dropout_keep_prob)
         self.attn_cell = None
 
         # variables needed for the context + prediction steps
@@ -50,10 +48,19 @@ class Encoder(object):
         self.num_m = 8
         self.total_m_size = self.num_perspectives * self.num_m
         self.agg_cell = tf.nn.rnn_cell.DropoutWrapper(
-            tf.nn.rnn_cell.BasicLSTMCell(self.total_m_size),
-            output_keep_prob=self.dropout)
+            tf.nn.rnn_cell.BasicLSTMCell(self.size),
+            output_keep_prob=dropout_keep_prob)
 
         self.max_paragraph_size = 750
+
+    def update_dropout(self, dropout_keep_prob):
+        self.cell = tf.nn.rnn_cell.DropoutWrapper(
+            tf.nn.rnn_cell.BasicLSTMCell(self.size),
+            output_keep_prob=dropout_keep_prob)
+        self.agg_cell = tf.nn.rnn_cell.DropoutWrapper(
+            tf.nn.rnn_cell.BasicLSTMCell(self.size),
+            output_keep_prob=dropout_keep_prob)
+
 
     def last_hidden_state(self, fw_o, bw_o, srclen, concat, hidden_size):
         # https://danijar.com/variable-sequence-lengths-in-tensorflow/
@@ -85,7 +92,7 @@ class Encoder(object):
                  or both.
         """
         with vs.variable_scope(scope, reuse=reuse):
-            srclen = tf.reduce_sum(tf.cast(masks, tf.int32), axis=1)
+            srclen = tf.reduce_sum(masks, axis=1)
             (fw_o, bw_o), (f_o_state, b_o_state) = tf.nn.bidirectional_dynamic_rnn(cell_fw=self.cell, cell_bw=self.cell,
                                                                                    inputs=inputs,
                                                                                    sequence_length=srclen,
@@ -100,33 +107,36 @@ class Encoder(object):
     def encode_bilstm(self, inputs, masks, concat, stage, f_init_state=None, b_init_state=None, scope="", reuse=False):
         if stage == 'context_rep':
             cell = self.cell
-            hidden_size = self.size
         elif stage == 'aggregation':
             cell = self.agg_cell
-            hidden_size = self.total_m_size
         else:
             raise ValueError('stage of processing is not one of ("context_rep", "aggregation")')
         with vs.variable_scope(scope, reuse=reuse):
-            srclen = tf.reduce_sum(tf.cast(masks, tf.int32), axis=1)
-            (fw_o, bw_o), _ = tf.nn.bidirectional_dynamic_rnn(cell_fw=cell, cell_bw=cell, inputs=inputs,
+            srclen = tf.reduce_sum(masks, axis=1)
+            (fw_o, bw_o), (last_fw_tuple, last_bw_tuple) = tf.nn.bidirectional_dynamic_rnn(cell_fw=cell, cell_bw=cell, inputs=inputs,
                                                               sequence_length=srclen, initial_state_fw=f_init_state,
                                                               initial_state_bw=b_init_state, dtype=tf.float64)
+            _, last_fw_state = last_fw_tuple
+            _, last_bw_state = last_bw_tuple
             if concat:
                 all_hidden_states = tf.concat(2, [fw_o, bw_o])
+                last_hidden_state = tf.concat(2, [last_fw_state, last_bw_state])
             else:
                 all_hidden_states = (fw_o, bw_o)
+                last_hidden_state = (last_fw_state, last_bw_state)
 
-            last_hidden_state = self.last_hidden_state(fw_o, bw_o, srclen, concat, hidden_size)
+            # last_hidden_state = self.last_hidden_state(fw_o, bw_o, srclen, concat, hidden_size)
 
         return all_hidden_states, last_hidden_state
 
     def encode_gru(self, inputs, masks, init_state=None, scope="", reuse=False):
         with vs.variable_scope(scope, reuse=reuse):
-            srclen = tf.reduce_sum(tf.cast(masks, tf.int32), axis=1)
-            states, _ = tf.nn.dynamic_rnn(cell=self.cell, inputs=inputs, sequence_length=srclen,
+            srclen = tf.reduce_sum(masks, axis=1)
+            states, (_, last_state) = tf.nn.dynamic_rnn(cell=self.cell, inputs=inputs, sequence_length=srclen,
                                           initial_state=init_state, dtype=tf.float64)
-            last_hidden_state = self.last_hidden_state(states, None, srclen, False, self.size)
-            return states, last_hidden_state
+
+            # last_hidden_state = self.last_hidden_state(states, None, srclen, False, self.size)
+            return states, last_state
 
 
     def attn_mixer(self, reference_states, reference_masks, input_state, scope="", reuse=False):
@@ -137,14 +147,15 @@ class Encoder(object):
             norm_scores = normalize_scores(scores, reference_masks)
             weighted_reference_states = reference_states * norm_scores
 
-            srclen = tf.reduce_sum(tf.cast(reference_masks, tf.int32), axis=1)
-            return weighted_reference_states, self.last_hidden_state(weighted_reference_states, None, srclen, False, self.size)
+            #srclen = tf.reduce_sum(tf.cast(reference_masks, tf.int32), axis=1)
+            return weighted_reference_states#, self.last_hidden_state(weighted_reference_states, None, srclen, False, self.size)
 
     def allen_step_three(self, input, encoder_input, encoder_mask, scope="", reuse=False):
         with vs.variable_scope(scope, reuse):
             y_mask = tf.expand_dims(encoder_mask, dim = 1)
 
-            A = batch_matmul(input, tf.matrix_transpose(encoder_input))
+            p = tf.matrix_transpose(encoder_input)
+            A = batch_matmul(input, p)
             A = tf.exp(A - tf.reduce_max(A, reduction_indices=2, keep_dims=True))
             A = A*tf.cast(y_mask, tf.float64)
             A = A / (1e-6 + tf.reduce_sum(A, reduction_indices=2, keep_dims=True))
@@ -164,7 +175,7 @@ class Encoder(object):
     def encode_w_gru_attn(self, inputs, masks, encoder_outputs, encoder_masks, init_state=None, scope="", reuse=False):
         self.attn_cell = GRUAttnCell(self.size, encoder_outputs, encoder_masks)
         with vs.variable_scope(scope, reuse):
-            srclen = tf.reduce_sum(tf.cast(masks, tf.int32), axis=1)
+            srclen = tf.reduce_sum(masks, axis=1)
             states, _ = tf.nn.dynamic_rnn(cell=self.attn_cell, inputs=inputs, sequence_length=srclen,
                                           initial_state=init_state, dtype=tf.float64)
             last_hidden_state = self.last_hidden_state(states, None, srclen, False, self.size)
@@ -192,18 +203,18 @@ class Encoder(object):
             Wv2 = tf.expand_dims(mat2, dim=3) * W # mat2 (10, 60, 200, 50)
             norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=2)
             norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=2)
-            # norm_Wv1_t = tf.transpose(norm_Wv1, [0,3,1,2]) #(?, num_perspectives, num_mat1_states, hidden_size)
-            # norm_Wv2_t = tf.transpose(norm_Wv2, [0,3,2,1]) #(?, num_perspectives, hidden_size, num_mat2_states)
-            # compared_states = tf.matmul(norm_Wv1_t, norm_Wv2_t) #(?, num_perspectives, num_mat1_states, num_mat2_states)
-            compared_states = tf.expand_dims(norm_Wv1, dim=2) * tf.expand_dims(norm_Wv2, dim=1) #(?, num_perspectives, num_mat1_states, num_mat2_states)
-            compared_states = tf.reduce_sum(compared_states, axis=2)
+            norm_Wv1_t = tf.transpose(norm_Wv1, [0,3,1,2]) #(?, num_perspectives, num_mat1_states, hidden_size)
+            norm_Wv2_t = tf.transpose(norm_Wv2, [0,3,2,1]) #(?, num_perspectives, hidden_size, num_mat2_states)
+            compared_states = tf.matmul(norm_Wv1_t, norm_Wv2_t) #(?, num_perspectives, num_mat1_states, num_mat2_states)
+            # compared_states = tf.expand_dims(norm_Wv1, dim=2) * tf.expand_dims(norm_Wv2, dim=1) #(?, num_perspectives, num_mat1_states, num_mat2_states)
+            # compared_states = tf.reduce_sum(compared_states, axis=2)
             if op == 'max':
-                m = tf.reduce_max(compared_states, axis=2)
+                m = tf.reduce_max(compared_states, axis=3)
             elif op == 'mean':
-                m = tf.reduce_mean(compared_states, axis=2)
+                m = tf.reduce_mean(compared_states, axis=3)
             else:
                 raise ValueError('op type is not one of ("max", "mean")')
-            # m = tf.transpose(result, [0, 2, 1])
+            m = tf.transpose(m, [0, 2, 1])
             return m
 
     # given a matrix, gets all cosine scores
@@ -235,10 +246,12 @@ class Encoder(object):
             # norm_mat1 = tf.nn.l2_normalize(mat1, dim=2)
             # norm_mat2 = tf.nn.l2_normalize(mat2, dim=2)
             if op == 'mean':
-                weighted_mat2 = tf.expand_dims(alpha, dim=3) * tf.expand_dims(mat2, dim=1)
-                weighted_mat2 = tf.reduce_sum(weighted_mat2, axis=2)
+                # weighted_mat2 = tf.expand_dims(alpha, dim=3) * tf.expand_dims(mat2, dim=1)
+                # weighted_mat2 = tf.reduce_sum(weighted_mat2, axis=2)
+                weighted_mat2 = batch_matmul(alpha, mat2)
                 sum_alpha = 1e-6 + tf.reduce_sum(alpha, axis=2, keep_dims=True)
                 input_mat_2 = weighted_mat2 / sum_alpha
+
             elif op == 'max':
                 max_alpha_inds = tf.argmax(alpha, axis=2)
 
@@ -263,7 +276,6 @@ class Encoder(object):
         norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=2)
         cos_sim = tf.reduce_sum(norm_Wv1 * norm_Wv2, axis=2)
         return cos_sim
-
 
 class GRUAttnCell(tf.nn.rnn_cell.GRUCell):
     def __init__(self, num_units, encoder_outputs, encoder_masks, scope=None):
@@ -295,12 +307,13 @@ class GRUAttnCell(tf.nn.rnn_cell.GRUCell):
 
 
 class Decoder(object):
-    def __init__(self, output_size, num_perspectives, hidden_state_size):
+    def __init__(self, output_size, num_perspectives, num_perspective_classes, hidden_state_size):
         self.output_size = output_size  # output size
         self.num_perspectives = num_perspectives
+        self.num_perspective_classes = num_perspective_classes
         self.hidden_state_size = hidden_state_size # size of hidden state
 
-    def decode(self, knowledge_rep):
+    def decode(self, knowledge_rep, scope):
         """
         takes in a knowledge representation
         and output a probability estimation over
@@ -313,11 +326,9 @@ class Decoder(object):
         """
 
         # h_q, h_p: both are 2-d TF variables
-        with vs.variable_scope("answer_start"):
-            a_s = tf.nn.rnn_cell._linear(knowledge_rep, output_size=self.output_size, bias=True)
-        with vs.variable_scope("answer_end"):
-            a_e = tf.nn.rnn_cell._linear(knowledge_rep, output_size=self.output_size, bias=True)
-        return a_s, a_e
+        with vs.variable_scope(scope):
+            scores = tf.nn.rnn_cell._linear(knowledge_rep, output_size=self.output_size, bias=True)
+        return scores
 
     # def decode_gru(self, start_knowledge_rep, end_knowledge_rep):
     #     with vs.variable_scope("answer_start"):
@@ -326,19 +337,27 @@ class Decoder(object):
     #         a_e = tf.nn.rnn_cell._linear(end_knowledge_rep, output_size=self.output_size, bias=True)
     #     return a_s, a_e
 
-    def decode_matrix(self, knowledge_states, scope="", reuse=False):
+    def decode_matrix(self, knowledge_states, scope, reuse=False):
 
         with vs.variable_scope(scope, reuse):
             batch_size = tf.shape(knowledge_states)[0]
-
-            vector_W = tf.get_variable("vector_W", shape =[self.hidden_state_size, 1], initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float64)
+            vector_W = tf.get_variable("vector_W", shape = [self.hidden_state_size, 1], initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float64)
             knowledge_states_flat = tf.reshape(knowledge_states, [-1, self.hidden_state_size])
             pred_ = tf.matmul(knowledge_states_flat, vector_W)
             pred = tf.reshape(pred_, [batch_size, -1])
-            pred = pred
-
         return pred
 
+    # 2-layer feedforward
+    def decode_bmpm(self, knowledge_states, scope, reuse=False):
+        input_dim = 4*self.hidden_state_size
+        with vs.variable_scope(scope):
+            W1 = tf.get_variable("W1", shape=[input_dim, self.output_size], initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float64)
+            W2 = tf.get_variable("W2", shape=[self.output_size, self.output_size], initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float64)
+            b1 = tf.get_variable("b1", shape=[self.output_size], initializer=tf.constant_initializer(0.0), dtype=tf.float64)
+            b2 = tf.get_variable("b2", shape=[self.output_size], initializer=tf.constant_initializer(0.0), dtype=tf.float64)
+            s_layer1 = tf.nn.relu(tf.matmul(knowledge_states, W1) + b1)
+            a_i = tf.matmul(s_layer1, W2) + b2
+            return a_i
 
 class QASystem(object):
     def __init__(self, encoder, decoder, FLAGS):
@@ -359,10 +378,10 @@ class QASystem(object):
         # self.end_answer = tf.placeholder(tf.int32, [None, self.FLAGS.output_size])
         self.end_answer = tf.placeholder(tf.int32, [None,])
 
-        self.question_mask = tf.placeholder(tf.bool, [None, self.FLAGS.max_question_size])
-        self.paragraph_mask = tf.placeholder(tf.bool, [None,self.FLAGS.max_paragraph_size])
+        self.question_mask = tf.placeholder(tf.int32, [None, self.FLAGS.max_question_size])
+        self.paragraph_mask = tf.placeholder(tf.int32, [None,self.FLAGS.max_paragraph_size])
 
-        # self.dropout = tf.placeholder(tf.float64, ())
+        self.dropout = tf.placeholder(tf.float64, shape=())
 
         self.encoder = encoder
         self.decoder = decoder
@@ -404,8 +423,8 @@ class QASystem(object):
         q_2_states, q_last_state = self.encoder.encode_w_gru_attn(q_states, self.question_mask, encoder_outputs=p_states,
                                                                 encoder_masks=self.paragraph_mask, scope='q_attn')
         # step 3
-        p_3_states, _ = self.encoder.attn_mixer(p_states, self.paragraph_mask, q_last_state, scope='attn_to_q')
-        q_3_states, _ = self.encoder.attn_mixer(q_2_states, self.question_mask, p_last_state, scope='attn_to_p')
+        p_3_states, = self.encoder.attn_mixer(p_states, self.paragraph_mask, q_last_state, scope='attn_to_q')
+        q_3_states, = self.encoder.attn_mixer(q_2_states, self.question_mask, p_last_state, scope='attn_to_p')
 
 
         p_4_states, p_4_last_state = self.encoder.encode_gru(p_3_states, self.paragraph_mask, scope='p4')
@@ -447,7 +466,7 @@ class QASystem(object):
 
         ###### OLD BASELINE MODEL ------ END ######
         """
-
+        self.encoder.update_dropout(self.dropout)
         # step 1
         q_states, q_last_state = self.encoder.encode_gru(self.question_var, self.question_mask, scope='question')
 
@@ -467,6 +486,16 @@ class QASystem(object):
         p_5_states, _ = self.encoder.encode_gru(p_4_states, self.paragraph_mask, scope='p5')
         self.a_e = self.decoder.decode_matrix(p_5_states, scope='answer_end')
 
+        self.apply_masks_and_softmax()
+
+
+    # Trick to mask since log(0)=-INF
+    def apply_masks_and_softmax(self):
+        log_masks = tf.log(tf.cast(self.paragraph_mask, tf.float64))
+        masked_a_s = self.a_s + log_masks
+        masked_a_e = self.a_e + log_masks
+        self.a_s = tf.nn.softmax(masked_a_s)
+        self.a_e = tf.nn.softmax(masked_a_e)
 
     def bmpm_layer(self, from_fw_all_h, from_bw_all_h, p_fw_last_h, p_bw_last_h, to_fw_all_h, to_bw_all_h, to_fw_last_h,
                    to_bw_last_h, alpha_fw, alpha_bw, scope):
@@ -503,7 +532,8 @@ class QASystem(object):
                                                                        stage='aggregation', concat=False,
                                                                        scope='q_aggregation')
         knowledge_rep = tf.concat(1, [p_agg_fw_last_h, p_agg_bw_last_h, q_agg_fw_last_h, q_agg_bw_last_h])
-        self.a_s, self.a_e = self.decoder.decode(knowledge_rep)
+        self.a_s = self.decoder.decode_bmpm(knowledge_rep, scope='answer_start')
+        self.a_e = self.decoder.decode_bmpm(knowledge_rep, scope='answer_end')
 
     def setup_loss(self):
         """
@@ -526,7 +556,7 @@ class QASystem(object):
             self.paragraph_var = tf.nn.embedding_lookup(embedding, self.paragraph)
             self.question_var = tf.nn.embedding_lookup(embedding, self.question)
 
-    def optimize(self, session, paragraph, paragraph_mask, question, question_mask, answer_start, answer_end):
+    def optimize(self, session, paragraph, paragraph_mask, question, question_mask, answer_start, answer_end, dropout):
         """
         Takes in actual data to optimize your model
         This method is equivalent to a step() function
@@ -545,7 +575,7 @@ class QASystem(object):
         input_feed[self.question_mask] = question_mask
         input_feed[self.start_answer] = answer_start
         input_feed[self.end_answer] = answer_end
-        # input_feed[self.dropout] = dropout
+        input_feed[self.dropout] = dropout
 
         # grad_norm, param_norm
         output_feed = [self.updates, self.loss, self.grad_norm]
@@ -569,6 +599,7 @@ class QASystem(object):
         input_feed[self.question_mask] = question_mask
         input_feed[self.start_answer] = answer_start
         input_feed[self.end_answer] = answer_end
+        input_feed[self.dropout] = 1.0
 
         output_feed = [self.loss]
 
@@ -591,6 +622,7 @@ class QASystem(object):
         input_feed[self.question] = question
         input_feed[self.paragraph_mask] = p_mask
         input_feed[self.question_mask] = q_mask
+        input_feed[self.dropout] = 1.0
 
         output_feed = [self.a_s, self.a_e]
 
@@ -729,7 +761,7 @@ class QASystem(object):
         params = tf.trainable_variables()
         num_params = sum(map(lambda t: np.prod(tf.shape(t.value()).eval()), params))
         toc = time.time()
-        logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
+        logging.info("Number of params: %d (retrieval took %f secs)" % (num_params, toc - tic))
         saver = tf.train.Saver()
 
         epochs = 80 if self.FLAGS.testing == 'test' else self.FLAGS.epochs
@@ -748,9 +780,9 @@ class QASystem(object):
 
             saver.save(session, self.FLAGS.log_dir + '/model-weights', global_step=e)
 
-            #if val_dataset:
-            #    val_loss = self.validate(session, val_dataset)
-            #    logging.info("Validation Loss: %s", val_loss)
+            if val_dataset:
+                val_loss = self.validate(session, val_dataset)
+                logging.info("Validation Loss: %s", val_loss)
 
 
             f1, em = self.evaluate_answer(session, train_dataset, sample=100, log=True)
