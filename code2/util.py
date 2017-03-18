@@ -127,7 +127,7 @@ def read_dataset(paragraph_file, question_file, answer_file, max_paragraph_len):
     return dataset
 
 
-def sample_dataset(dataset, sample=100):
+def get_sample_dataset(dataset, sample=100):
     size = len(dataset)
     random_indexes = np.random.choice(size, sample, replace=False)
     output = []

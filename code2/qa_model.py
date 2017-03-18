@@ -685,7 +685,7 @@ class QASystem(object):
 
         sample_dataset = dataset
         if sample:
-            sample_dataset = util.sample_dataset(dataset, sample)
+            sample_dataset = util.get_sample_dataset(dataset, sample)
 
         for batch_num, batch in enumerate(util.minibatches(sample_dataset, self.FLAGS.batch_size, shuffle=False)):
             paragraphs, questions, answers = batch
