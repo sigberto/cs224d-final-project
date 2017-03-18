@@ -48,7 +48,7 @@ class Encoder(object):
         self.num_m = 8
         self.total_m_size = self.num_perspectives * self.num_m
         self.agg_cell = tf.nn.rnn_cell.DropoutWrapper(
-            tf.nn.rnn_cell.BasicLSTMCell(self.total_m_size),
+            tf.nn.rnn_cell.BasicLSTMCell(self.size),
             output_keep_prob=dropout_keep_prob)
 
         self.max_paragraph_size = 750
@@ -58,7 +58,7 @@ class Encoder(object):
             tf.nn.rnn_cell.BasicLSTMCell(self.size),
             output_keep_prob=dropout_keep_prob)
         self.agg_cell = tf.nn.rnn_cell.DropoutWrapper(
-            tf.nn.rnn_cell.BasicLSTMCell(self.total_m_size),
+            tf.nn.rnn_cell.BasicLSTMCell(self.size),
             output_keep_prob=dropout_keep_prob)
 
 
@@ -203,18 +203,18 @@ class Encoder(object):
             Wv2 = tf.expand_dims(mat2, dim=3) * W # mat2 (10, 60, 200, 50)
             norm_Wv1 = tf.nn.l2_normalize(Wv1, dim=2)
             norm_Wv2 = tf.nn.l2_normalize(Wv2, dim=2)
-            # norm_Wv1_t = tf.transpose(norm_Wv1, [0,3,1,2]) #(?, num_perspectives, num_mat1_states, hidden_size)
-            # norm_Wv2_t = tf.transpose(norm_Wv2, [0,3,2,1]) #(?, num_perspectives, hidden_size, num_mat2_states)
-            # compared_states = tf.matmul(norm_Wv1_t, norm_Wv2_t) #(?, num_perspectives, num_mat1_states, num_mat2_states)
-            compared_states = tf.expand_dims(norm_Wv1, dim=2) * tf.expand_dims(norm_Wv2, dim=1) #(?, num_perspectives, num_mat1_states, num_mat2_states)
-            compared_states = tf.reduce_sum(compared_states, axis=2)
+            norm_Wv1_t = tf.transpose(norm_Wv1, [0,3,1,2]) #(?, num_perspectives, num_mat1_states, hidden_size)
+            norm_Wv2_t = tf.transpose(norm_Wv2, [0,3,2,1]) #(?, num_perspectives, hidden_size, num_mat2_states)
+            compared_states = tf.matmul(norm_Wv1_t, norm_Wv2_t) #(?, num_perspectives, num_mat1_states, num_mat2_states)
+            # compared_states = tf.expand_dims(norm_Wv1, dim=2) * tf.expand_dims(norm_Wv2, dim=1) #(?, num_perspectives, num_mat1_states, num_mat2_states)
+            # compared_states = tf.reduce_sum(compared_states, axis=2)
             if op == 'max':
-                m = tf.reduce_max(compared_states, axis=2)
+                m = tf.reduce_max(compared_states, axis=3)
             elif op == 'mean':
-                m = tf.reduce_mean(compared_states, axis=2)
+                m = tf.reduce_mean(compared_states, axis=3)
             else:
                 raise ValueError('op type is not one of ("max", "mean")')
-            # m = tf.transpose(result, [0, 2, 1])
+            m = tf.transpose(m, [0, 2, 1])
             return m
 
     # given a matrix, gets all cosine scores
@@ -246,10 +246,12 @@ class Encoder(object):
             # norm_mat1 = tf.nn.l2_normalize(mat1, dim=2)
             # norm_mat2 = tf.nn.l2_normalize(mat2, dim=2)
             if op == 'mean':
-                weighted_mat2 = tf.expand_dims(alpha, dim=3) * tf.expand_dims(mat2, dim=1)
-                weighted_mat2 = tf.reduce_sum(weighted_mat2, axis=2)
+                # weighted_mat2 = tf.expand_dims(alpha, dim=3) * tf.expand_dims(mat2, dim=1)
+                # weighted_mat2 = tf.reduce_sum(weighted_mat2, axis=2)
+                weighted_mat2 = batch_matmul(alpha, mat2)
                 sum_alpha = 1e-6 + tf.reduce_sum(alpha, axis=2, keep_dims=True)
                 input_mat_2 = weighted_mat2 / sum_alpha
+
             elif op == 'max':
                 max_alpha_inds = tf.argmax(alpha, axis=2)
 
@@ -347,7 +349,7 @@ class Decoder(object):
 
     # 2-layer feedforward
     def decode_bmpm(self, knowledge_states, scope, reuse=False):
-        input_dim = 8*self.hidden_state_size
+        input_dim = 4*self.hidden_state_size
         with vs.variable_scope(scope):
             W1 = tf.get_variable("W1", shape=[input_dim, self.output_size], initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float64)
             W2 = tf.get_variable("W2", shape=[self.output_size, self.output_size], initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float64)
