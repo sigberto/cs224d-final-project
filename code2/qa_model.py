@@ -642,7 +642,7 @@ class QASystem(object):
 
         return (a_s, a_e)
 
-    def validate(self, session, val_dataset):
+    def validate(self, session, val_dataset, sample=None):
         """
         Iterate through the validation dataset and determine what
         the validation cost is.
@@ -654,6 +654,8 @@ class QASystem(object):
 
 
         val_cost = 0.0
+        if sample:
+            val_dataset = util.get_sample_dataset(val_dataset, sample)
 
         for batch_num, batch in enumerate(util.minibatches(val_dataset, self.FLAGS.batch_size, shuffle=False)):
             p, q, a = batch
@@ -773,7 +775,7 @@ class QASystem(object):
                 q, q_mask = self.mask_and_pad(q, 'question')
                 p, p_mask = self.mask_and_pad(p, 'paragraph')
 
-                updates, loss, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e)
+                updates, loss, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e, self.FLAGS.dropout_keep_prob)
                 logging.info('Epoch: {}. Batch: {}. Loss:{}'.format(e, batch_num, loss))
                 print("Loss: " + str(loss) + " ------ Gradient Norm: " + str(grad_norm))
                 if self.FLAGS.testing == 'test': break
@@ -781,7 +783,7 @@ class QASystem(object):
             saver.save(session, self.FLAGS.log_dir + '/model-weights', global_step=e)
 
             if val_dataset:
-                val_loss = self.validate(session, val_dataset)
+                val_loss = self.validate(session, val_dataset,sample=self.FLAGS.validation_sample)
                 logging.info("Validation Loss: %s", val_loss)
 
 

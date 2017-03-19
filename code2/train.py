@@ -41,6 +41,7 @@ tf.app.flags.DEFINE_string("max_question_size", 60, "Path to the trimmed GLoVe e
 
 tf.app.flags.DEFINE_string("model", "baseline", "Which baseline should we use")
 tf.app.flags.DEFINE_string("testing", "train", "Run on same batch.")
+tf.app.flags.DEFINE_integer("validation_sample", 500, "Sample size for validation batch.")
 
 
 FLAGS = tf.app.flags.FLAGS
