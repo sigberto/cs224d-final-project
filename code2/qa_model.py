@@ -687,8 +687,7 @@ class QASystem(object):
 
         sample_dataset = dataset
         if sample:
-            sample_dataset = util.get_sample_dataset(dataset, sample)
-
+            sample_dataset = util.get_sample_dataset(dataset, sample, random)
         for batch_num, batch in enumerate(util.minibatches(sample_dataset, self.FLAGS.batch_size, shuffle=False)):
             paragraphs, questions, answers = batch
 
@@ -766,7 +765,8 @@ class QASystem(object):
         logging.info("Number of params: %d (retrieval took %f secs)" % (num_params, toc - tic))
         saver = tf.train.Saver()
 
-        epochs = 80 if self.FLAGS.testing == 'test' else self.FLAGS.epochs
+        testing = self.FLAGS.testing == 'test'
+        epochs = 80 if testing else self.FLAGS.epochs
 
         for e in range(epochs):
             for batch_num, batch in enumerate(util.minibatches(train_dataset, self.FLAGS.batch_size, shuffle=False)):
@@ -778,15 +778,13 @@ class QASystem(object):
                 updates, loss, grad_norm = self.optimize(session, p, p_mask, q, q_mask, a_s, a_e, self.FLAGS.dropout_keep_prob)
                 logging.info('Epoch: {}. Batch: {}. Loss:{}'.format(e, batch_num, loss))
                 print("Loss: " + str(loss) + " ------ Gradient Norm: " + str(grad_norm))
-                if self.FLAGS.testing == 'test': break
+                if testing: break
 
-            saver.save(session, self.FLAGS.log_dir + '/model-weights', global_step=e)
+            if not testing:
+                saver.save(session, self.FLAGS.weights_dir + '/model-weights', global_step=e)
+                if val_dataset:
+                    val_loss = self.validate(session, val_dataset,sample=self.FLAGS.validation_sample)
+                    logging.info("Validation Loss: %s", val_loss)
 
-            if val_dataset:
-                val_loss = self.validate(session, val_dataset,sample=self.FLAGS.validation_sample)
-                logging.info("Validation Loss: %s", val_loss)
-
-
-            f1, em = self.evaluate_answer(session, train_dataset, sample=100, log=True)
-
-
+                f1, em = self.evaluate_answer(session, val_dataset, sample=100, random=True, log=True)
+            f1, em = self.evaluate_answer(session, train_dataset, sample=10, random=False, log=True)
