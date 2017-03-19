@@ -337,12 +337,13 @@ class Decoder(object):
     #         a_e = tf.nn.rnn_cell._linear(end_knowledge_rep, output_size=self.output_size, bias=True)
     #     return a_s, a_e
 
-    def decode_matrix(self, knowledge_states, scope, reuse=False):
+    
+    def decode_matrix(self, knowledge_states, hidden_state_size, scope, reuse=False):
 
         with vs.variable_scope(scope, reuse):
             batch_size = tf.shape(knowledge_states)[0]
-            vector_W = tf.get_variable("vector_W", shape = [self.hidden_state_size, 1], initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float64)
-            knowledge_states_flat = tf.reshape(knowledge_states, [-1, self.hidden_state_size])
+            vector_W = tf.get_variable("vector_W", shape = [hidden_state_size, 1], initializer=tf.contrib.layers.xavier_initializer(), dtype=tf.float64)
+            knowledge_states_flat = tf.reshape(knowledge_states, [-1, hidden_state_size])
             pred_ = tf.matmul(knowledge_states_flat, vector_W)
             pred = tf.reshape(pred_, [batch_size, -1])
         return pred
@@ -392,7 +393,7 @@ class QASystem(object):
             if self.FLAGS.model == 'baseline':
                 self.setup_system_baseline()
             else:
-                self.setup_system_bmpm()
+                self.setup_system_bmpm_j()
             self.setup_loss()
 
         # ==== set up training/updating procedure ====
@@ -513,6 +514,40 @@ class QASystem(object):
                               m_attentive_matching_mean_bw])
         return m
 
+    def setup_system_bmpm_j(self):
+
+        (p_fw_all_h, p_bw_all_h), (p_fw_last_h, p_bw_last_h) = self.encoder.encode_bilstm(self.paragraph_var,
+                                                                                          self.paragraph_mask,
+                                                                                          stage='context_rep',
+                                                                                          concat=False,
+                                                                                          scope='paragraph')
+        (q_fw_all_h, q_bw_all_h), (q_fw_last_h, q_bw_last_h) = self.encoder.encode_bilstm(self.question_var,
+                                                                                          self.question_mask,
+                                                                                          stage='context_rep',
+                                                                                          concat=False,
+                                                                                          scope='question')
+        alpha_fw = self.encoder.compare_states(p_fw_all_h, q_fw_all_h)
+        alpha_bw = self.encoder.compare_states(p_bw_all_h, q_bw_all_h)
+        m_p = self.bmpm_layer(p_fw_all_h, p_bw_all_h, p_fw_last_h, p_bw_last_h, q_fw_all_h, q_bw_all_h, q_fw_last_h,
+                              q_bw_last_h,
+                              alpha_fw, alpha_bw, scope='p_bmpm')
+
+        # step 3
+        (knowledge_rep_s_fw, knowledge_rep_s_bw), (_, _) = self.encoder.encode_bilstm(m_p, self.paragraph_mask,
+                                                                                      stage='context_rep',
+                                                                                      concat = False,
+                                                                                      scope='knowledge_rep_1')
+        knowledge_rep_s = tf.concat(2, [knowledge_rep_s_fw, knowledge_rep_s_bw])
+        self.a_s = self.decoder.decode_matrix(knowledge_rep_s, 2*self.FLAGS.state_size, scope='answer_start')
+
+        # step 4
+        (knowledge_rep_e_fw, knowledge_rep_e_bw), (_, _) = self.encoder.encode_bilstm(knowledge_rep_s, self.paragraph_mask,
+                                                                                      stage='context_rep',
+                                                                                      concat=False,
+                                                                                      scope='knowledge_rep_2')
+        knowledge_rep_e = tf.concat(2, [knowledge_rep_e_fw, knowledge_rep_e_bw])
+        self.a_e = self.decoder.decode_matrix(knowledge_rep_e, 2*self.FLAGS.state_size, scope='answer_end')
+
     def setup_system_bmpm(self):
 
         (p_fw_all_h, p_bw_all_h), (p_fw_last_h, p_bw_last_h) = self.encoder.encode_bilstm(self.paragraph_var, self.paragraph_mask, stage='context_rep', concat=False, scope='paragraph')
@@ -534,6 +569,8 @@ class QASystem(object):
         knowledge_rep = tf.concat(1, [p_agg_fw_last_h, p_agg_bw_last_h, q_agg_fw_last_h, q_agg_bw_last_h])
         self.a_s = self.decoder.decode_bmpm(knowledge_rep, scope='answer_start')
         self.a_e = self.decoder.decode_bmpm(knowledge_rep, scope='answer_end')
+
+        # self.apply_masks_and_softmax()
 
     def setup_loss(self):
         """
