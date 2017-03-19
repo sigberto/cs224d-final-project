@@ -18,6 +18,7 @@ from qa_model import Encoder, QASystem, Decoder
 from preprocessing.squad_preprocess import data_from_json, maybe_download, squad_base_url, \
     invert_map, tokenize, token_idx_map
 import qa_data
+import util
 
 import logging
 
@@ -26,7 +27,7 @@ logging.basicConfig(level=logging.INFO)
 FLAGS = tf.app.flags.FLAGS
 
 tf.app.flags.DEFINE_float("learning_rate", 0.001, "Learning rate.")
-tf.app.flags.DEFINE_float("dropout", 0.15, "Fraction of units randomly dropped on non-recurrent connections.")
+tf.app.flags.DEFINE_float("dropout_keep_prob", 0.85, "Fraction of units randomly dropped on non-recurrent connections.")
 tf.app.flags.DEFINE_integer("batch_size", 10, "Batch size to use during training.")
 tf.app.flags.DEFINE_integer("epochs", 0, "Number of epochs to train.")
 tf.app.flags.DEFINE_integer("state_size", 200, "Size of each model layer.")
@@ -36,8 +37,15 @@ tf.app.flags.DEFINE_integer("keep", 0, "How many checkpoints to keep, 0 indicate
 tf.app.flags.DEFINE_string("train_dir", "train", "Training directory (default: ./train).")
 tf.app.flags.DEFINE_string("log_dir", "log", "Path to store log and flag files (default: ./log)")
 tf.app.flags.DEFINE_string("vocab_path", "data/squad/vocab.dat", "Path to vocab file (default: ./data/squad/vocab.dat)")
-tf.app.flags.DEFINE_string("embed_path", "", "Path to the trimmed GLoVe embedding (default: ./data/squad/glove.trimmed.{embedding_size}.npz)")
+tf.app.flags.DEFINE_string("embed_path", "data/squad/glove.trimmed.100.npz", "Path to the trimmed GLoVe embedding (default: ./data/squad/glove.trimmed.{embedding_size}.npz)")
 tf.app.flags.DEFINE_string("dev_path", "data/squad/dev-v1.1.json", "Path to the JSON dev set to evaluate against (default: ./data/squad/dev-v1.1.json)")
+tf.app.flags.DEFINE_string("max_paragraph_size", 750, "Path to the trimmed GLoVe embedding (default: ./data/squad/glove.trimmed.{embedding_size}.npz)")
+tf.app.flags.DEFINE_string("max_question_size", 60, "Path to the trimmed GLoVe embedding (default: ./data/squad/glove.trimmed.{embedding_size}.npz)")
+tf.app.flags.DEFINE_string("model", "baseline", "Which baseline should we use")
+tf.app.flags.DEFINE_string("testing", "run", "Run on same batch.")
+tf.app.flags.DEFINE_float("max_gradient_norm", 10.0, "Clip gradients to this norm.")
+tf.app.flags.DEFINE_integer("num_perspectives", 50, "Dimension of perspectives matrix in BMPM.")
+tf.app.flags.DEFINE_integer("num_perspective_classes", 6, "Dimension of perspectives matrix in BMPM.")
 
 def initialize_model(session, model, train_dir):
     ckpt = tf.train.get_checkpoint_state(train_dir)
@@ -130,6 +138,22 @@ def generate_answers(sess, model, dataset, rev_vocab):
     :return:
     """
     answers = {}
+    #import pdb; pdb.set_trace()
+    raw_contexts, raw_questions, question_uuids = dataset
+    contexts = [[int(x) for x in raw_context.split()] for raw_context in raw_contexts]
+    questions = [[int(x) for x in raw_question.split()] for raw_question in raw_questions]
+    dataset = zip(contexts, questions, question_uuids)
+
+    for batch_num, batch in enumerate(util.minibatches(dataset, FLAGS.batch_size, shuffle=False)):
+        context_batch, question_batch, uuid_batch = batch
+        a_s, a_e = model.answer(sess, context_batch, question_batch)
+        for i in range(len(uuid_batch)):
+            uuid = uuid_batch[i]
+            context = context_batch[i]
+            answer_int = context[a_s[i]:a_e[i]+1]
+            answers[uuid] = ' '.join([rev_vocab[ind] for ind in answer_int])
+        #import pdb; pdb.set_trace()
+        if batch_num >= 10: break
 
     return answers
 
@@ -176,15 +200,19 @@ def main(_):
     # ========= Model-specific =========
     # You must change the following code2 to adjust to your model
 
-    encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size)
-    decoder = Decoder(output_size=FLAGS.output_size)
+    encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, num_perspectives=FLAGS.num_perspectives,
+                      dropout_keep_prob=FLAGS.dropout_keep_prob)
+    decoder = Decoder(output_size=FLAGS.output_size, num_perspectives=FLAGS.num_perspectives,
+                      num_perspective_classes=FLAGS.num_perspective_classes,  hidden_state_size=FLAGS.state_size)
 
-    qa = QASystem(encoder, decoder)
+    qa = QASystem(encoder, decoder, FLAGS)
+    
 
     with tf.Session() as sess:
         train_dir = get_normalized_train_dir(FLAGS.train_dir)
         initialize_model(sess, qa, train_dir)
         answers = generate_answers(sess, qa, dataset, rev_vocab)
+
 
         # write to json file to root dir
         with io.open('dev-prediction.json', 'w', encoding='utf-8') as f:
