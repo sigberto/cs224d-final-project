@@ -786,5 +786,5 @@ class QASystem(object):
                     val_loss = self.validate(session, val_dataset,sample=self.FLAGS.validation_sample)
                     logging.info("Validation Loss: %s", val_loss)
 
-                f1, em = self.evaluate_answer(session, val_dataset, sample=100, random=True, log=True)
-            f1, em = self.evaluate_answer(session, train_dataset, sample=10, random=False, log=True)
+                f1, em = self.evaluate_answer(session, val_dataset, sample=200, random=True, log=True)
+            f1, em = self.evaluate_answer(session, train_dataset, sample=200, random=True, log=True)
