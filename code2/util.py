@@ -127,12 +127,14 @@ def read_dataset(paragraph_file, question_file, answer_file, max_paragraph_len):
     return dataset
 
 
-def get_sample_dataset(dataset, sample=100):
-    size = len(dataset)
-    random_indexes = np.random.choice(size, sample, replace=False)
-    output = []
+def get_sample_dataset(dataset, sample=100, random=True):
+    if random:
+        size = len(dataset)
+        random_indexes = np.random.choice(size, sample, replace=False)
+        output = []
 
-    for idx in random_indexes:
-        output.append(dataset[idx])
-
-    return output
+        for idx in random_indexes:
+            output.append(dataset[idx])
+        return output
+    else:
+        return dataset[:sample]
