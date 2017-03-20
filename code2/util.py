@@ -1,11 +1,12 @@
 import numpy as np
 
-def load_dataset(f1, f2, f3, batch_size, max_paragraph_len, in_batches, random):
+def load_dataset(f1, f2, f3, batch_size, max_paragraph_len, in_batches, random, sample_size=10000000):
     fd1, fd2, fd3 = open(f1), open(f2), open(f3)
     batch1 = []
     batch2 = []
     batch3 = []
     num_lines = sum(1 for _ in fd1)
+    num_lines = min(num_lines, sample_size)
     fd1.seek(0)
     if not random:
         for i in xrange(num_lines-1):
@@ -117,7 +118,7 @@ def read_dataset(paragraph_file, question_file, answer_file, max_paragraph_len):
         raw_question = [int(x) for x in question_stream.readline().split()]
         #if len(raw_question.split(" ")) <= 2: continue # toss out bad questions
         raw_answer = [int(x) for x in answer_stream.readline().split()]
-        
+        if max(raw_answer) > max_paragraph_len: continue
         dataset.append((raw_paragraph, raw_question, raw_answer))
 
     question_stream.close()
