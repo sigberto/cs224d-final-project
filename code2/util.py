@@ -1,6 +1,36 @@
 import numpy as np
 
-def load_dataset(f1, f2, f3, batch_size, max_paragraph_len, in_batches, random, sample_size=10000000):
+def load_dataset(f1, f2, f3, batch_size, max_paragraph_len=10000, sample_size=10000000):
+    fd1, fd2, fd3 = open(f1), open(f2), open(f3)
+    batch1 = []
+    batch2 = []
+    batch3 = []
+    num_lines = len(fd1.readlines())
+    lines_remaining_in_file = num_lines
+    # lines_remaining_in_sample = sample_size
+    fd1.seek(0)
+    lines_given = 0
+    for line1 in fd1:
+        if lines_given >= sample_size: break
+        line2, line3 = fd2.readline(), fd3.readline()
+        context = [int(x) for x in line1.split()]
+        if len(context) > max_paragraph_len:
+            lines_remaining_in_file -= 1
+            continue
+
+        batch1.append(context)
+        batch2.append([int(x) for x in line2.split()])
+        batch3.append([int(x) for x in line3.split()])
+        lines_given +=1
+        lines_remaining_in_file -=1
+
+        if len(batch1) == batch_size or lines_given == sample_size or lines_remaining_in_file == 0:
+            yield batch1, batch2, batch3
+            batch1 = []
+            batch2 = []
+            batch3 = []
+
+def load_dataset_old(f1, f2, f3, batch_size, max_paragraph_len, in_batches, random, sample_size=10000000):
     fd1, fd2, fd3 = open(f1), open(f2), open(f3)
     batch1 = []
     batch2 = []

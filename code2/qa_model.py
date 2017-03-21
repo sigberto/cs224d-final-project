@@ -408,6 +408,8 @@ class QASystem(object):
         self.updates = train_op
         self.grad_norm = tf.global_norm(grad)
 
+        self.saver = tf.train.Saver()
+
     def setup_system_baseline(self):
         """
         After your modularized implementation of encoder and decoder
@@ -491,12 +493,12 @@ class QASystem(object):
 
 
     # Trick to mask since log(0)=-INF
-    def apply_masks_and_softmax(self):
+    def apply_masks(self):
         log_masks = tf.log(tf.cast(self.paragraph_mask, tf.float64))
         masked_a_s = self.a_s + log_masks
         masked_a_e = self.a_e + log_masks
-        self.a_s = tf.nn.softmax(masked_a_s)
-        self.a_e = tf.nn.softmax(masked_a_e)
+        self.a_s = masked_a_s
+        self.a_e = masked_a_e
 
     def bmpm_layer(self, from_fw_all_h, from_bw_all_h, p_fw_last_h, p_bw_last_h, to_fw_all_h, to_bw_all_h, to_fw_last_h,
                    to_bw_last_h, alpha_fw, alpha_bw, scope):
@@ -549,7 +551,7 @@ class QASystem(object):
         knowledge_rep_e = tf.concat(2, [knowledge_rep_e_fw, knowledge_rep_e_bw])
         self.a_e = self.decoder.decode_matrix(knowledge_rep_e, 2*self.FLAGS.state_size, scope='answer_end')
 
-        #self.apply_masks_and_softmax()
+        self.apply_masks()
         
         
     def setup_system_bmpm(self):
@@ -697,7 +699,7 @@ class QASystem(object):
         val_cost = 0.0
 
         for p, q, a in util.load_dataset(context_file, question_file, answer_file, self.FLAGS.batch_size,
-                                         self.FLAGS.max_paragraph_size, in_batches=True, random=False, sample_size=sample_size):
+                                         self.FLAGS.max_paragraph_size, sample_size=sample_size):
             a_s, a_e = zip(*a) # self.one_hot_func(a)
             q, q_mask = self.mask_and_pad(q, 'question')
             p, p_mask = self.mask_and_pad(p, 'paragraph')
@@ -705,7 +707,35 @@ class QASystem(object):
             val_cost += self.test(session, p, p_mask, q, q_mask, a_s, a_e)
 
         return val_cost
+    
+    def evaluate_full_val_dataset(self, session, dataset, vocab, sample_size=100, log=False):
+        f1_raw = 0.
+        em_raw = 0.
 
+        total_samples = 0
+        for p, q, answers in util.load_dataset("data/squad/val.ids.context", "data/squad/val.ids.question", "data/squad/val.span",
+                                   self.FLAGS.batch_size, 1000, sample_size=sample_size):
+            questions, question_masks = self.mask_and_pad(q, 'question')
+            paragraphs, paragraph_masks = self.mask_and_pad(p, 'paragraph')
+            pred_a_s, pred_a_e = self.answer(session, paragraphs, paragraph_masks, questions, question_masks)
+
+            for question, q_mask, paragraph, p_mask, answer, a_s, a_e in zip(questions, question_masks, paragraphs, paragraph_masks, answers, pred_a_s, pred_a_e):
+                ground_truth = ' '.join([str(i) for i in paragraph[answer[0] : answer[1] + 1]])
+                prediction = ' '.join([str(i) for i in paragraph[a_s : a_e + 1]])
+                f1_raw += f1_score(prediction, ground_truth)
+                em_raw += exact_match_score(prediction, ground_truth)
+                total_samples += 1
+
+            print('total_samples: ', total_samples)
+
+        f1 = f1_raw / float(total_samples)
+        em = em_raw / float(total_samples)
+        
+        if log:
+            logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample_size))
+        else:
+            print("F1: {}, EM: {}, for {} samples".format(f1, em, sample_size))
+ 
     def evaluate_answer(self, session, batch_size, sample_size, random=False, log=False):
     #def evaluate_answer(self, session, sample=100, random=False, log=False):
 
@@ -724,10 +754,8 @@ class QASystem(object):
         f1_raw = 0.
         em_raw = 0.
 
-        output = util.load_dataset("data/squad/val.ids.context", "data/squad/val.ids.question", "data/squad/val.span",
-                                   self.FLAGS.batch_size, self.FLAGS.max_paragraph_size, in_batches=True, random=False, sample_size=sample_size)
-        for e in xrange(10):
-            p, q, answers = output.next()
+        for p, q, answers in util.load_dataset("data/squad/val.ids.context", "data/squad/val.ids.question", "data/squad/val.span",
+                                   self.FLAGS.batch_size, self.FLAGS.max_paragraph_size, sample_size=sample_size):
             questions, question_masks = self.mask_and_pad(q, 'question')
             paragraphs, paragraph_masks = self.mask_and_pad(p, 'paragraph')
             pred_a_s, pred_a_e = self.answer(session, paragraphs, paragraph_masks, questions, question_masks)
@@ -828,7 +856,6 @@ class QASystem(object):
         num_params = sum(map(lambda t: np.prod(tf.shape(t.value()).eval()), params))
         toc = time.time()
         logging.info("Number of params: %d (retrieval took %f secs)" % (num_params, toc - tic))
-        saver = tf.train.Saver()
 
         testing = self.FLAGS.testing == 'test'
         epochs = 80 if testing else self.FLAGS.epochs
@@ -837,7 +864,7 @@ class QASystem(object):
             batch_num = 0
             for batch in util.load_dataset("data/squad/train.ids.context", "data/squad/train.ids.question",
                                              "data/squad/train.span", self.FLAGS.batch_size,
-                                             self.FLAGS.max_paragraph_size, in_batches=True, random=False):
+                                             self.FLAGS.max_paragraph_size):
 
                 p, q, a = batch
                 a_s, a_e = zip(*a)  # self.one_hot_func(a)
@@ -851,7 +878,7 @@ class QASystem(object):
                 if testing: break
 
             if not testing:
-                saver.save(session, self.FLAGS.weights_dir + '/model-weights', global_step=e)
+                self.saver.save(session, train_dir + '/model-weights', global_step=e)
                 if validate:
                     val_loss = self.validate(session, sample_size=self.FLAGS.validation_sample)
                     logging.info("Validation Loss: %s", val_loss)

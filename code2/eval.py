@@ -28,7 +28,7 @@ tf.app.flags.DEFINE_integer("num_perspectives", 30, "Dimension of perspectives m
 tf.app.flags.DEFINE_integer("num_perspective_classes", 6, "Dimension of perspectives matrix in BMPM.")
 tf.app.flags.DEFINE_string("data_dir", "data/squad", "SQuAD directory (default ./data/squad)")
 tf.app.flags.DEFINE_string("train_dir", "train2", "Training directory to save the model parameters (default: ./train).")
-tf.app.flags.DEFINE_string("load_train_dir", "train", "Training directory to load model parameters from to resume training (default: {train_dir}).")
+tf.app.flags.DEFINE_string("load_train_dir", "weights_best", "Training directory to load model parameters from to resume training (default: {train_dir}).")
 tf.app.flags.DEFINE_string("log_dir", "log", "Path to store log and flag files (default: ./log)")
 tf.app.flags.DEFINE_string("weights_dir", "weights", "Path to store weights (default: ./weights)")
 tf.app.flags.DEFINE_string("optimizer", "adam", "adam / sgd")
@@ -118,9 +118,12 @@ def main(_):
         initialize_model(sess, qa, load_train_dir)
         
         save_train_dir = get_normalized_train_dir(FLAGS.train_dir)
-        qa.train(sess, dataset, save_train_dir)
+        # qa.train(sess, dataset, save_train_dir)
         
-        qa.evaluate_answer(sess, dataset, vocab, FLAGS.evaluate, log=True)
+        # qa.evaluate_answer(sess, dataset, vocab, FLAGS.evaluate, log=True)
+        qa.evaluate_full_val_dataset(sess, 'val', vocab, sample_size=10000, log=False)
+        # qa.evaluate_full_val_dataset(sess, 'val', vocab, sample_size=200, log=False)
+
 
 if __name__ == "__main__":
     tf.app.run()
