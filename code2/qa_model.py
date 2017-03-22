@@ -673,9 +673,11 @@ class QASystem(object):
 
         return outputs
 
-    def answer(self, session, paragraph, p_mask, question, q_mask):
-
-        yp, yp2 = self.decode(session, paragraph, p_mask, question, q_mask)
+    def answer(self, session, paragraph_batch, question_batch):
+        
+        paragraphs, paragraph_masks = self.mask_and_pad(paragraph_batch, 'paragraph')
+        questions, question_masks = self.mask_and_pad(question_batch, 'question')
+        yp, yp2 = self.decode(session, paragraphs, paragraph_masks, questions, question_masks)
 
         a_s = np.argmax(yp, axis=1)
         a_e = np.argmax(yp2, axis=1)
@@ -717,7 +719,7 @@ class QASystem(object):
                                    self.FLAGS.batch_size, 1000, sample_size=sample_size):
             questions, question_masks = self.mask_and_pad(q, 'question')
             paragraphs, paragraph_masks = self.mask_and_pad(p, 'paragraph')
-            pred_a_s, pred_a_e = self.answer(session, paragraphs, paragraph_masks, questions, question_masks)
+            pred_a_s, pred_a_e = self.answer(session, p, q)
 
             for question, q_mask, paragraph, p_mask, answer, a_s, a_e in zip(questions, question_masks, paragraphs, paragraph_masks, answers, pred_a_s, pred_a_e):
                 ground_truth = ' '.join([str(i) for i in paragraph[answer[0] : answer[1] + 1]])
@@ -758,7 +760,7 @@ class QASystem(object):
                                    self.FLAGS.batch_size, self.FLAGS.max_paragraph_size, sample_size=sample_size):
             questions, question_masks = self.mask_and_pad(q, 'question')
             paragraphs, paragraph_masks = self.mask_and_pad(p, 'paragraph')
-            pred_a_s, pred_a_e = self.answer(session, paragraphs, paragraph_masks, questions, question_masks)
+            pred_a_s, pred_a_e = self.answer(session, p, q)
 
             for question, q_mask, paragraph, p_mask, answer, a_s, a_e in zip(questions, question_masks, paragraphs, paragraph_masks, answers, pred_a_s, pred_a_e):
                 ground_truth = ' '.join([str(i) for i in paragraph[answer[0] : answer[1] + 1]])

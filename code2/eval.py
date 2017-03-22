@@ -121,7 +121,7 @@ def main(_):
         # qa.train(sess, dataset, save_train_dir)
         
         # qa.evaluate_answer(sess, dataset, vocab, FLAGS.evaluate, log=True)
-        qa.evaluate_full_val_dataset(sess, 'val', vocab, sample_size=10000, log=False)
+        qa.evaluate_full_val_dataset(sess, 'val', vocab, sample_size=5000, log=False)
         # qa.evaluate_full_val_dataset(sess, 'val', vocab, sample_size=200, log=False)
 
 
